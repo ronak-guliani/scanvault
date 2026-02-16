@@ -1,6 +1,6 @@
 "use client";
 
-import type { Asset, Category, UserSettings } from "@scanvault/shared";
+import type { Asset, Category, ExtractedField, UserSettings } from "@scanvault/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WebApiClient } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
@@ -75,6 +75,113 @@ function IconGoogle() {
       <path d="M8.98 3.58c1.17 0 2.23.4 3.06 1.2l2.3-2.3A8 8 0 008.98 1a8 8 0 00-7.15 4.41l2.68 2.07c.63-1.9 2.4-3.3 4.47-3.3z" fill="#EA4335" />
     </svg>
   );
+}
+
+interface ReceiptLineItem {
+  index: number;
+  name: string;
+  qty?: number;
+  unitPrice?: string;
+  price?: string;
+}
+
+interface ReceiptDetailsView {
+  isReceipt: boolean;
+  metadata: Array<{ key: string; label: string; value: string }>;
+  lineItems: ReceiptLineItem[];
+  totals: Array<{ key: string; label: string; value: string }>;
+  extraFields: ExtractedField[];
+}
+
+function toDisplayValue(value: string | number): string {
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? String(value) : value.toFixed(2);
+  }
+  return value;
+}
+
+function toMoneyValue(value: string | number | undefined): string | undefined {
+  if (typeof value === "number") return `$${value.toFixed(2)}`;
+  if (typeof value !== "string") return undefined;
+  const numeric = Number(value.replace(/[$,\s]/g, ""));
+  if (!Number.isFinite(numeric)) return value;
+  return `$${numeric.toFixed(2)}`;
+}
+
+function fieldLabel(key: string): string {
+  return key
+    .replace(/_/g, " ")
+    .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function parseReceiptDetails(fields: ExtractedField[]): ReceiptDetailsView {
+  const lineItemMap = new Map<number, ReceiptLineItem>();
+  const consumedKeys = new Set<string>();
+  const lineItemPattern = /^line_item_(\d+)_(name|qty|unit_price|price)$/;
+
+  for (const field of fields) {
+    const match = field.key.match(lineItemPattern);
+    if (!match) continue;
+    const index = Number(match[1]);
+    const part = match[2];
+    const current = lineItemMap.get(index) ?? { index, name: "" };
+    if (part === "name") current.name = toDisplayValue(field.value);
+    if (part === "qty") current.qty = Number(field.value);
+    if (part === "unit_price") current.unitPrice = toMoneyValue(field.value) ?? toDisplayValue(field.value);
+    if (part === "price") current.price = toMoneyValue(field.value) ?? toDisplayValue(field.value);
+    lineItemMap.set(index, current);
+    consumedKeys.add(field.key);
+  }
+
+  const metadataKeys: Array<{ key: string; label: string }> = [
+    { key: "store_name", label: "Store" },
+    { key: "date", label: "Date" },
+    { key: "receipt_number", label: "Receipt #" },
+    { key: "invoice_number", label: "Invoice #" },
+    { key: "po_number", label: "PO #" },
+    { key: "phone", label: "Phone" }
+  ];
+  const totalKeys: Array<{ key: string; label: string }> = [
+    { key: "subtotal_amount", label: "Subtotal" },
+    { key: "tax_amount", label: "Tax" },
+    { key: "total_amount", label: "Total" }
+  ];
+
+  const metadata = metadataKeys
+    .map((entry) => {
+      const field = fields.find((item) => item.key === entry.key);
+      if (!field) return null;
+      consumedKeys.add(entry.key);
+      return { key: entry.key, label: entry.label, value: toDisplayValue(field.value) };
+    })
+    .filter((item): item is { key: string; label: string; value: string } => item !== null);
+
+  const totals = totalKeys
+    .map((entry) => {
+      const field = fields.find((item) => item.key === entry.key);
+      if (!field) return null;
+      consumedKeys.add(entry.key);
+      return { key: entry.key, label: entry.label, value: toMoneyValue(field.value) ?? toDisplayValue(field.value) };
+    })
+    .filter((item): item is { key: string; label: string; value: string } => item !== null);
+
+  const lineItems = [...lineItemMap.values()]
+    .filter((item) => item.name.trim().length > 0)
+    .filter((item) => !/^receipt total$/i.test(item.name.trim()))
+    .filter((item) => !/^[A-Za-z\s]+,\s*[A-Z]{2}$/.test(item.name.trim()))
+    .sort((a, b) => a.index - b.index);
+
+  const extraFields = fields.filter((field) => !consumedKeys.has(field.key) && !/^file_(name|size_bytes)$/.test(field.key));
+  const hasReceiptSignals =
+    lineItems.length > 0 || totals.length > 0 || metadata.some((field) => field.key === "receipt_number" || field.key === "invoice_number");
+
+  return {
+    isReceipt: hasReceiptSignals,
+    metadata,
+    lineItems,
+    totals,
+    extraFields
+  };
 }
 
 export function Dashboard(): JSX.Element {
@@ -508,8 +615,8 @@ export function Dashboard(): JSX.Element {
           <div className="lg:col-span-2">
             <div className="card sticky top-6 p-5">
               <h3 className="section-title mb-4">Details</h3>
-              {selectedAsset ? (
-                <div className="space-y-4 animate-fade-in">
+               {selectedAsset ? (
+                 <div className="space-y-4 animate-fade-in">
                   <div>
                     <p className="font-body text-sm font-medium text-zinc-200">{selectedAsset.originalFileName}</p>
                     <p className="font-mono text-[10px] text-zinc-600 mt-0.5">{selectedAsset.id}</p>
@@ -526,19 +633,87 @@ export function Dashboard(): JSX.Element {
                     </button>
                   )}
                   <p className="font-body text-sm text-zinc-400 leading-relaxed">{selectedAsset.summary || "No summary yet"}</p>
-                  {selectedAsset.fields.length > 0 && (
-                    <div>
-                      <h4 className="font-display text-xs font-semibold uppercase tracking-widest text-zinc-500 mb-2">Extracted Fields</h4>
-                      <div className="space-y-1.5">
-                        {selectedAsset.fields.map((f) => (
-                          <div key={`${f.key}-${f.value}`} className="flex items-baseline justify-between gap-2 rounded-md bg-surface-2 px-3 py-2">
-                            <span className="font-mono text-xs text-zinc-400">{f.key}</span>
-                            <span className="font-body text-sm text-zinc-200 text-right">{String(f.value)}{f.unit ? ` ${f.unit}` : ""}</span>
+                  {selectedAsset.fields.length > 0 && (() => {
+                    const receiptDetails = parseReceiptDetails(selectedAsset.fields);
+                    if (!receiptDetails.isReceipt) {
+                      return (
+                        <div>
+                          <h4 className="font-display text-xs font-semibold uppercase tracking-widest text-zinc-500 mb-2">Extracted Fields</h4>
+                          <div className="space-y-1.5">
+                            {selectedAsset.fields.map((f) => (
+                              <div key={`${f.key}-${f.value}`} className="flex items-baseline justify-between gap-2 rounded-md bg-surface-2 px-3 py-2">
+                                <span className="font-mono text-xs text-zinc-400">{f.key}</span>
+                                <span className="font-body text-sm text-zinc-200 text-right">{String(f.value)}{f.unit ? ` ${f.unit}` : ""}</span>
+                              </div>
+                            ))}
                           </div>
-                        ))}
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="space-y-3">
+                        <h4 className="font-display text-xs font-semibold uppercase tracking-widest text-zinc-500">Receipt View</h4>
+                        {receiptDetails.metadata.length > 0 && (
+                          <div className="grid grid-cols-2 gap-2">
+                            {receiptDetails.metadata.map((field) => (
+                              <div key={field.key} className="rounded-md border border-zinc-800/80 bg-surface-2 px-3 py-2">
+                                <p className="font-display text-[10px] uppercase tracking-widest text-zinc-500">{field.label}</p>
+                                <p className="mt-1 font-body text-sm text-zinc-200">{field.value}</p>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {receiptDetails.lineItems.length > 0 && (
+                          <div className="overflow-hidden rounded-md border border-zinc-800/80 bg-surface-2">
+                            <div className="overflow-x-auto">
+                              <div className="min-w-[540px]">
+                                <div className="grid grid-cols-[minmax(220px,1fr)_56px_92px_110px] gap-x-3 border-b border-zinc-800/70 px-4 py-2 text-[10px] uppercase tracking-widest text-zinc-500">
+                                  <span>Item</span>
+                                  <span className="text-right">Qty</span>
+                                  <span className="text-right">Unit</span>
+                                  <span className="text-right">Amount</span>
+                                </div>
+                                {receiptDetails.lineItems.map((item) => (
+                                  <div key={item.index} className="grid grid-cols-[minmax(220px,1fr)_56px_92px_110px] gap-x-3 px-4 py-2 text-sm text-zinc-200 odd:bg-black/10">
+                                    <span className="font-body pr-2">{item.name}</span>
+                                    <span className="text-right font-mono tabular-nums text-zinc-400">{item.qty ?? "-"}</span>
+                                    <span className="text-right font-mono tabular-nums text-zinc-400">{item.unitPrice ?? "-"}</span>
+                                    <span className="text-right font-mono tabular-nums">{item.price ?? "-"}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                        {receiptDetails.totals.length > 0 && (
+                          <div className="rounded-md border border-vault-800/60 bg-vault-950/20 p-3">
+                            {receiptDetails.totals.map((total) => (
+                              <div key={total.key} className="flex items-center justify-between py-1">
+                                <span className="font-display text-[11px] uppercase tracking-widest text-zinc-500">{total.label}</span>
+                                <span className={`font-mono ${total.key === "total_amount" ? "text-base text-vault-300" : "text-sm text-zinc-300"}`}>
+                                  {total.value}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {receiptDetails.extraFields.length > 0 && (
+                          <div>
+                            <h5 className="mb-2 font-display text-[10px] uppercase tracking-widest text-zinc-600">Additional Fields</h5>
+                            <div className="space-y-1.5">
+                              {receiptDetails.extraFields.map((field) => (
+                                <div key={`${field.key}-${field.value}`} className="flex items-baseline justify-between gap-2 rounded-md bg-surface-2 px-3 py-2">
+                                  <span className="font-mono text-xs text-zinc-500">{fieldLabel(field.key)}</span>
+                                  <span className="font-body text-sm text-zinc-200 text-right">{String(field.value)}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                   {selectedAsset.entities.length > 0 && (
                     <div>
                       <h4 className="font-display text-xs font-semibold uppercase tracking-widest text-zinc-500 mb-2">Entities</h4>
