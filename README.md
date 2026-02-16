@@ -1,6 +1,8 @@
 # ScanVault
 
-A document intelligence platform that turns unstructured files — images, PDFs, screenshots, receipts — into structured, searchable data. Upload a file, extract key fields with AI or OCR, and search across everything from a web dashboard or the command line.
+A CLI-first document intelligence platform that turns unstructured files — images, PDFs, screenshots, receipts — into structured, searchable data. Upload a file, extract key fields with AI or OCR, and search across everything from the terminal, through GitHub Copilot, or via a web dashboard.
+
+> **Built for the terminal.** ScanVault is designed to be used primarily through the `vault` CLI and integrates natively with GitHub Copilot, so you can extract, upload, and search your documents without leaving your editor or terminal.
 
 ## Architecture
 
@@ -39,7 +41,8 @@ infra/          Azure infrastructure as code (Bicep)
 - **Categories** — organize assets with default and custom categories
 - **Full-text search** — query across all extracted data with a natural search syntax
 - **Rate limiting** — per-user upload throttling (minute + daily)
-- **CLI** — `vault upload`, `vault search`, `vault extract`, `vault export`, and more
+- **CLI-first** — `vault upload`, `vault search`, `vault extract`, `vault export`, and more — the primary interface
+- **GitHub Copilot integration** — use Copilot as an AI extraction provider directly from the CLI (no API key required)
 - **Infrastructure as Code** — full Bicep templates for one-command Azure deployment
 
 ## Getting Started
@@ -87,7 +90,7 @@ az deployment group create \
 
 ## CLI
 
-The `vault` command provides full access to ScanVault from the terminal:
+The `vault` CLI is the primary interface for ScanVault:
 
 ```
 vault login          Authenticate via browser
@@ -95,12 +98,29 @@ vault upload <file>  Upload and extract a document
 vault list           List all assets
 vault get <id>       View asset details
 vault search <q>     Search across extracted data
-vault extract <file> Run local AI extraction (BYO API key)
+vault extract <id>   Extract a specific field from an asset
 vault export         Export assets as JSON
 vault categories     Manage categories
 vault config         View/set configuration
 vault whoami         Show current user
 ```
+
+### GitHub Copilot Integration
+
+ScanVault ships with a [Copilot extraction skill](apps/cli/SKILL.md) that lets GitHub Copilot act as the AI extraction provider. When no API key is configured (or when `--copilot` is passed), the CLI delegates extraction to Copilot — meaning you get structured field extraction, entity recognition, and auto-categorization without any third-party AI key.
+
+```sh
+# Upload with Copilot extraction (automatic when no AI key is set)
+vault upload receipt.jpg
+
+# Explicitly use Copilot extraction
+vault upload invoice.pdf --copilot
+
+# Override the extractor command
+vault upload scan.png --copilot-cmd "gh copilot explain"
+```
+
+Copilot extraction produces the same structured output as the server-side AI providers — summary, fields, entities, and category — so the rest of the pipeline (search, export, dashboard) works identically regardless of extraction mode.
 
 ## Project Scripts
 
