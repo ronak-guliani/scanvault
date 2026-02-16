@@ -1,0 +1,11 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "RAILPACK",
+    "buildCommand": "npm run -w @scanvault/shared build && npm run -w @scanvault/web build"
+  },
+  "deploy": {
+    "startCommand": "npm run -w @scanvault/web start -- -p $PORT",
+    "healthcheckPath": "/"
+  }
+}

@@ -1,7 +1,5 @@
-import type { Asset } from "@scanvault/shared";
+import type { Asset, ParsedQuery } from "@scanvault/shared";
 import { AzureKeyCredential, SearchClient } from "@azure/search-documents";
-import type { ParsedQuery } from "@scanvault/shared";
-import { parseSearchQuery } from "@scanvault/shared";
 import { getSearchConfig } from "../config/index.js";
 import { getAssetsByIds, searchAssets } from "./cosmos.js";
 
@@ -81,10 +79,9 @@ export async function indexAssetForSearch(asset: Asset): Promise<void> {
 
 export async function runAssetSearch(
   userId: string,
-  query: string,
+  parsedQuery: ParsedQuery,
   options: { categoryId?: string; limit: number }
 ): Promise<{ parsedQuery: ParsedQuery; items: Awaited<ReturnType<typeof searchAssets>> }> {
-  const parsedQuery = parseSearchQuery(query);
   const cosmosResults = await searchAssets(userId, {
     parsedQuery,
     categoryId: options.categoryId,

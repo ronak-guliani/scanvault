@@ -6,7 +6,9 @@ import { WebApiClient } from "@/lib/api-client";
 import { authClient } from "@/lib/auth-client";
 
 interface SearchResult {
-  query: unknown;
+  type: "search" | "answer";
+  query?: unknown;
+  message?: string;
   items: Asset[];
 }
 
@@ -537,23 +539,31 @@ export function Dashboard(): JSX.Element {
             <div className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600"><IconSearch /></div>
             <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && void handleSearch()}
-              placeholder='Search: category:finance total>20 "starbucks"'
+              placeholder='Ask anything: "how many times have I gone to starbucks this month?"'
               className="input-field pl-9" />
           </div>
           <button type="button" onClick={() => void handleSearch()} disabled={isBusy || !searchQuery.trim()} className="btn-primary text-xs">Search</button>
         </div>
         {searchResult && (
           <div className="mt-4 space-y-2">
-            <p className="font-mono text-xs text-zinc-500">{searchResult.items.length} result(s)</p>
-            {searchResult.items.map((item) => (
-              <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-800/60 bg-surface-2 px-4 py-3">
-                <div className="min-w-0">
-                  <p className="truncate font-body text-sm font-medium text-zinc-200">{item.originalFileName}</p>
-                  <p className="truncate font-body text-xs text-zinc-500">{item.summary || "No summary"}</p>
-                </div>
-                <span className={statusBadge(item.status)}>{item.status}</span>
+            {searchResult.type === "answer" && searchResult.message ? (
+              <div className="rounded-lg border border-vault-800/60 bg-vault-950/20 px-4 py-3">
+                <p className="font-body text-sm text-zinc-200 leading-relaxed">{searchResult.message}</p>
               </div>
-            ))}
+            ) : (
+              <>
+                <p className="font-mono text-xs text-zinc-500">{searchResult.items.length} result(s)</p>
+                {searchResult.items.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between gap-3 rounded-lg border border-zinc-800/60 bg-surface-2 px-4 py-3">
+                    <div className="min-w-0">
+                      <p className="truncate font-body text-sm font-medium text-zinc-200">{item.originalFileName}</p>
+                      <p className="truncate font-body text-xs text-zinc-500">{item.summary || "No summary"}</p>
+                    </div>
+                    <span className={statusBadge(item.status)}>{item.status}</span>
+                  </div>
+                ))}
+              </>
+            )}
           </div>
         )}
       </div>

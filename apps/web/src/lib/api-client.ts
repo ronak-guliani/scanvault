@@ -14,7 +14,9 @@ interface UploadInitResponse {
 }
 
 interface SearchResponse {
-  query: unknown;
+  type: "search" | "answer";
+  query?: unknown;
+  message?: string;
   items: Asset[];
 }
 
