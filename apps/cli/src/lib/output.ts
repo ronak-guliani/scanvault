@@ -113,6 +113,30 @@ function toAssetTableRow(asset: AssetLike): PrintableRow {
   };
 }
 
+function renderTable(rows: PrintableRow[]): string {
+  const headers = Object.keys(rows[0] ?? {});
+  if (headers.length === 0) {
+    return "";
+  }
+
+  const matrix = rows.map((row) => headers.map((header) => String(row[header] ?? "")));
+  const widths = headers.map((header, index) =>
+    Math.max(header.length, ...matrix.map((line) => line[index].length))
+  );
+  const rule = (left: string, join: string, right: string): string =>
+    `${left}${widths.map((width) => "─".repeat(width + 2)).join(join)}${right}`;
+  const line = (cells: string[]): string =>
+    `│ ${cells.map((cell, index) => cell.padEnd(widths[index])).join(" │ ")} │`;
+
+  return [
+    rule("┌", "┬", "┐"),
+    line(headers),
+    rule("├", "┼", "┤"),
+    ...matrix.map((cells) => line(cells)),
+    rule("└", "┴", "┘")
+  ].join("\n");
+}
+
 function toAssetDetailView(asset: AssetLike): Record<string, unknown> {
   const fields = Array.isArray(asset.fields)
     ? asset.fields.slice(0, 12).map((field) => {
@@ -185,7 +209,7 @@ export function printOutput(data: unknown, options: OutputOptions = {}): void {
     }
 
     if (data.every(isAssetLike)) {
-      console.table((data as AssetLike[]).map(toAssetTableRow));
+      process.stdout.write(`${renderTable((data as AssetLike[]).map(toAssetTableRow))}\n`);
       return;
     }
 
@@ -194,7 +218,7 @@ export function printOutput(data: unknown, options: OutputOptions = {}): void {
       return;
     }
 
-    console.table(data.map(toCompactRow));
+    process.stdout.write(`${renderTable(data.map(toCompactRow))}\n`);
     return;
   }
 

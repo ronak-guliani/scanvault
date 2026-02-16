@@ -121,6 +121,12 @@ vault upload invoice.pdf --copilot
 # Override the extractor command
 vault upload scan.png --copilot-cmd "gh copilot explain"
 
+# Override the Copilot extraction model for one run
+vault upload receipt.jpg --copilot --copilot-model gemini-3-pro
+
+# Set default Copilot model globally
+vault config set copilot-model gemini-3-pro
+
 # Summarize a category for a time window
 vault summarize finance --since 2w
 
@@ -131,7 +137,8 @@ vault ask --category finance --since 1w how much did i spend last week
 vault ask --asset <id1> --asset <id2> what does this whiteboard capture
 ```
 
-Copilot extraction produces the same structured output as the server-side AI providers — summary, fields, entities, and category — so the rest of the pipeline (search, export, dashboard) works identically regardless of extraction mode.  
+Copilot extraction produces the same structured output as the server-side AI providers — summary, fields, entities, and category — so the rest of the pipeline (search, export, dashboard) works identically regardless of extraction mode. The default CLI extraction model is now `gemini-3-pro` with no model or OCR fallback in Copilot mode (command errors if the model does not return usable output).  
+If Copilot extraction returns an authorization error, set `VAULT_GITHUB_TOKEN` (or `GITHUB_TOKEN`) to a token that has GitHub Models read access; some `gh auth token` sessions cannot call the Models endpoint.
 By default, `vault summarize` and `vault ask` print readable plain-English text; use `--json` when you need structured output.
 
 ## Project Scripts

@@ -32,10 +32,28 @@ export function registerListCommand(program: Command): void {
           limit: Number(options.limit ?? "20")
         });
 
-        printOutput(response.data ?? [], {
-          json: options.json,
-          quiet: options.quiet
-        });
+        const assets = response.data ?? [];
+        if (options.json || options.quiet) {
+          printOutput(assets, {
+            json: options.json,
+            quiet: options.quiet
+          });
+          return;
+        }
+
+        const categories = await client.listCategories();
+        const categoryById = categories.reduce<Record<string, string>>((lookup, category) => {
+          lookup[category.id] = category.name;
+          return lookup;
+        }, {});
+
+        printOutput(
+          assets.map((asset) => ({
+            asset: asset.originalFileName,
+            category: categoryById[asset.categoryId] ?? "Uncategorized",
+            summary: asset.summary
+          }))
+        );
       })
     );
 }

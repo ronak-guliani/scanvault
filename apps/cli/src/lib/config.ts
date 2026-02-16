@@ -6,6 +6,7 @@ import { join } from "node:path";
 export interface VaultConfig {
   apiBaseUrl: string;
   copilotExtractorCommand?: string;
+  copilotModel?: string;
 }
 
 export interface VaultCredentials {
@@ -23,7 +24,8 @@ const DEFAULT_CONFIG: VaultConfig = {
   apiBaseUrl:
     process.env.VAULT_API_BASE_URL ??
     "https://func-scanvault-dev-a9e0bre8hfapg4h4.westus-01.azurewebsites.net/api",
-  copilotExtractorCommand: process.env.VAULT_COPILOT_EXTRACTOR_CMD
+  copilotExtractorCommand: process.env.VAULT_COPILOT_EXTRACTOR_CMD,
+  copilotModel: process.env.VAULT_COPILOT_MODEL ?? "gemini-3-pro"
 };
 
 async function ensureVaultDir(): Promise<void> {

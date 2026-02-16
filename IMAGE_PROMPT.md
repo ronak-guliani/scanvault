@@ -17,16 +17,15 @@ Return strictly JSON with keys:
 
 Rules:
 1. Output JSON only (no markdown, no prose).
-2. `summary` must be short and factual.
-3. `fields` must contain objects with: `key`, `value`, optional `unit`, optional `confidence` (0-1), optional `source` (`ai` or `ocr`).
-4. Choose `categorySlug/categoryName` from existing categories when possible; otherwise propose a sensible new category.
-5. Provide `assetName` as a clean user-facing filename (preserve extension).
-6. For receipts/invoices, include line-item details and totals:
-   - line item name, quantity, unit price, amount
-   - subtotal, tax, total
-   - receipt/invoice number, date, store/vendor name, phone (if visible)
-7. Do not hallucinate; omit unknown fields instead of inventing values.
-8. Include `rawText` only when useful OCR text is available.
+2. First infer the document type from the image itself, then extract fields that naturally match that document type.
+3. `summary` must be short and factual.
+4. `fields` must contain objects with: `key`, `value`, optional `unit`, optional `confidence` (0-1), optional `source` (`ai` or `ocr`).
+5. Choose `categorySlug/categoryName` from existing categories when possible; otherwise propose a sensible new category.
+6. Provide `assetName` as a clean user-facing filename (preserve extension).
+7. For transaction-like documents, include itemized rows and totals when visible (item name, quantity, unit price, amount, subtotal, tax, total, merchant/date/phone/reference).
+8. Never output metadata fields like `file_name` or `file_size_bytes`.
+9. Do not hallucinate; omit unknown fields instead of inventing values.
+10. Include `rawText` only when useful OCR text is available.
 
 ## Expected JSON shape
 

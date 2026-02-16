@@ -136,6 +136,13 @@ function fieldLabel(key: string): string {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
+function isVisibleDataField(key: string): boolean {
+  const normalized = key.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_");
+  if (/^file_(name|size_bytes)$/.test(normalized)) return false;
+  if (normalized.startsWith("file_") && /(name|size|bytes)/.test(normalized)) return false;
+  return true;
+}
+
 function toEditableField(field: ExtractedField): EditableField {
   return {
     key: field.key,
@@ -225,7 +232,7 @@ function parseReceiptDetails(fields: ExtractedField[]): ReceiptDetailsView {
     .filter((item) => !/^[A-Za-z\s]+,\s*[A-Z]{2}$/.test(item.name.trim()))
     .sort((a, b) => a.index - b.index);
 
-  const extraFields = fields.filter((field) => !consumedKeys.has(field.key) && !/^file_(name|size_bytes)$/.test(field.key));
+  const extraFields = fields.filter((field) => !consumedKeys.has(field.key) && isVisibleDataField(field.key));
   const hasReceiptSignals =
     lineItems.length > 0 || totals.length > 0 || metadata.some((field) => field.key === "receipt_number" || field.key === "invoice_number");
 
@@ -294,6 +301,10 @@ export function Dashboard(): JSX.Element {
         acc[asset.categoryId].push(asset);
         return acc;
       }, {}),
+    [assets]
+  );
+  const hasPendingAssets = useMemo(
+    () => assets.some((asset) => asset.status === "processing" || asset.status === "uploading"),
     [assets]
   );
 
@@ -377,8 +388,15 @@ export function Dashboard(): JSX.Element {
 
   useEffect(() => {
     if (!session?.user) return;
+    void refreshAll().catch((e: unknown) => setErrorMessage(e instanceof Error ? e.message : "Failed to load dashboard"));
+  }, [session?.user?.id, refreshAll]);
+
+  useEffect(() => {
+    if (!session?.user || !hasPendingAssets) return;
 
     let timer: number | null = null;
+
+    const shouldPoll = (): boolean => document.visibilityState === "visible" && document.hasFocus();
 
     const stopPolling = (): void => {
       if (timer !== null) {
@@ -387,17 +405,17 @@ export function Dashboard(): JSX.Element {
       }
     };
 
-    const shouldPoll = (): boolean => document.visibilityState === "visible" && document.hasFocus();
+    const pollOnce = (): void => {
+      if (!shouldPoll()) {
+        stopPolling();
+        return;
+      }
+      void refreshAssets().catch(() => {});
+    };
 
     const startPolling = (): void => {
       if (timer !== null || !shouldPoll()) return;
-      timer = window.setInterval(() => {
-        if (!shouldPoll()) {
-          stopPolling();
-          return;
-        }
-        void refreshAssets().catch(() => {});
-      }, 5000);
+      timer = window.setInterval(pollOnce, 5000);
     };
 
     const handleActivityChange = (): void => {
@@ -405,11 +423,10 @@ export function Dashboard(): JSX.Element {
         stopPolling();
         return;
       }
-      void refreshAssets().catch(() => {});
+      pollOnce();
       startPolling();
     };
 
-    void refreshAll().catch((e: unknown) => setErrorMessage(e instanceof Error ? e.message : "Failed to load dashboard"));
     startPolling();
 
     document.addEventListener("visibilitychange", handleActivityChange);
@@ -422,7 +439,7 @@ export function Dashboard(): JSX.Element {
       window.removeEventListener("focus", handleActivityChange);
       window.removeEventListener("blur", handleActivityChange);
     };
-  }, [session?.user?.id, refreshAll, refreshAssets]);
+  }, [session?.user?.id, hasPendingAssets, refreshAssets]);
 
   const handleSignIn = useCallback(async (provider: "microsoft" | "google"): Promise<void> => {
     setErrorMessage(null); setIsBusy(true);
@@ -768,6 +785,17 @@ export function Dashboard(): JSX.Element {
             <input ref={fileInputRef} type="file" multiple className="hidden"
               onChange={(e) => setUploadFiles(Array.from(e.target.files ?? []))} />
           </div>
+          <div className="max-w-xl space-y-1">
+            <p className="font-body text-xs text-zinc-400">
+              Web upload uses OCR by default. Add an AI API key in Settings to use AI extraction on web uploads.
+            </p>
+            <p className="font-body text-xs text-zinc-500">
+              CLI upload is recommended for AI extraction through Copilot: set API URL with{" "}
+              <code className="font-mono text-[11px] text-zinc-300">vault config set api-base-url &lt;url&gt;</code>, authenticate with{" "}
+              <code className="font-mono text-[11px] text-zinc-300">vault login</code>, then upload using{" "}
+              <code className="font-mono text-[11px] text-zinc-300">vault upload &lt;file&gt; --copilot</code>.
+            </p>
+          </div>
           {uploadFiles.length > 0 && (
             <div className="flex items-center gap-3">
               <span className="font-mono text-xs text-vault-400">{uploadFiles.length} file(s)</span>
@@ -853,7 +881,7 @@ export function Dashboard(): JSX.Element {
                   <p className="truncate font-body text-xs text-zinc-600">{asset.summary || "Processing..."}</p>
                   <p className="truncate font-mono text-[10px] text-zinc-500 mt-0.5">{categoryNameById[asset.categoryId] ?? "Uncategorized"}</p>
                 </div>
-                <span className={statusBadge(asset.status)}>{asset.status}</span>
+                {asset.status !== "ready" && <span className={statusBadge(asset.status)}>{asset.status}</span>}
                 <button type="button" onClick={(e) => { e.stopPropagation(); void handleDeleteAsset(asset.id); }}
                   disabled={isBusy} className="btn-danger text-xs px-2 py-1">✕</button>
               </div>
@@ -867,7 +895,6 @@ export function Dashboard(): JSX.Element {
                {selectedAsset ? (
                  <div className="space-y-4 animate-fade-in">
                   <div>
-                    <p className="font-body text-sm font-medium text-zinc-200">{selectedAsset.originalFileName}</p>
                     <p className="font-mono text-[10px] text-zinc-600 mt-0.5">{selectedAsset.id}</p>
                     <p className="font-mono text-[10px] text-zinc-500 mt-1">{categoryNameById[selectedAsset.categoryId] ?? "Uncategorized"}</p>
                   </div>
@@ -1025,7 +1052,7 @@ export function Dashboard(): JSX.Element {
                         <div>
                           <h4 className="font-display text-xs font-semibold uppercase tracking-widest text-zinc-500 mb-2">Extracted Fields</h4>
                           <div className="space-y-1.5">
-                            {selectedAsset.fields.map((f) => (
+                            {selectedAsset.fields.filter((field) => isVisibleDataField(field.key)).map((f) => (
                               <div key={`${f.key}-${f.value}`} className="flex items-baseline justify-between gap-2 rounded-md bg-surface-2 px-3 py-2">
                                 <span className="font-mono text-xs text-zinc-400">{f.key}</span>
                                 <span className="font-body text-sm text-zinc-200 text-right">{String(f.value)}{f.unit ? ` ${f.unit}` : ""}</span>
@@ -1096,6 +1123,17 @@ export function Dashboard(): JSX.Element {
                             </div>
                           </div>
                         )}
+                        <div>
+                          <h5 className="mb-2 font-display text-[10px] uppercase tracking-widest text-zinc-600">All Extracted Fields</h5>
+                          <div className="space-y-1.5">
+                            {selectedAsset.fields.filter((field) => isVisibleDataField(field.key)).map((field) => (
+                              <div key={`all-${field.key}-${field.value}`} className="flex items-baseline justify-between gap-2 rounded-md bg-surface-2 px-3 py-2">
+                                <span className="font-mono text-xs text-zinc-500">{fieldLabel(field.key)}</span>
+                                <span className="font-body text-sm text-zinc-200 text-right">{String(field.value)}{field.unit ? ` ${field.unit}` : ""}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
                       </div>
                     );
                   })()}
@@ -1388,7 +1426,7 @@ export function Dashboard(): JSX.Element {
                 <div className="card overflow-visible p-4">
                   <div className="mb-3 flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <h3 className="truncate font-display text-sm font-semibold text-zinc-100">{selectedAsset.originalFileName}</h3>
+                      <h3 className="truncate font-display text-sm font-semibold text-zinc-100">Asset details</h3>
                       <p className="font-body text-xs text-zinc-500">{categoryNameById[selectedAsset.categoryId] ?? "Uncategorized"}</p>
                     </div>
                     <button
@@ -1411,7 +1449,7 @@ export function Dashboard(): JSX.Element {
 
                   {selectedAsset.fields.length > 0 && (
                     <div className="mt-3 space-y-1.5">
-                      {selectedAsset.fields.slice(0, 8).map((field) => (
+                      {selectedAsset.fields.filter((field) => isVisibleDataField(field.key)).map((field) => (
                         <div key={`${selectedAsset.id}-${field.key}-${String(field.value)}`} className="flex items-baseline justify-between gap-2 rounded-md bg-surface-2 px-3 py-2">
                           <span className="font-mono text-xs text-zinc-400">{field.key}</span>
                           <span className="font-body text-sm text-zinc-200 text-right">{String(field.value)}{field.unit ? ` ${field.unit}` : ""}</span>

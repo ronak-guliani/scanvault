@@ -209,6 +209,9 @@ async function runLocalTesseract(filePath: string): Promise<string | null> {
 }
 
 async function getGitHubToken(): Promise<string | null> {
+  if (process.env.VAULT_GITHUB_TOKEN && process.env.VAULT_GITHUB_TOKEN.trim().length > 0) {
+    return process.env.VAULT_GITHUB_TOKEN.trim();
+  }
   if (process.env.GITHUB_TOKEN && process.env.GITHUB_TOKEN.trim().length > 0) {
     return process.env.GITHUB_TOKEN.trim();
   }
@@ -224,19 +227,30 @@ async function getGitHubToken(): Promise<string | null> {
   return token.length > 0 ? token : null;
 }
 
-async function runGitHubModelsExtractor(input: CopilotExtractionInput): Promise<ClientExtractionResult | null> {
+async function requestGitHubModelsExtraction(
+  input: CopilotExtractionInput,
+  model: string,
+  forceDetailedFields = false
+): Promise<ClientExtractionResult | null> {
   if (!input.mimeType.startsWith("image/")) return null;
   const token = await getGitHubToken();
-  if (!token) return null;
+  if (!token) {
+    throw new Error("Missing GitHub token for Copilot extraction. Set `VAULT_GITHUB_TOKEN` (or `GITHUB_TOKEN`) to a token with GitHub Models read access.");
+  }
 
   const imageBase64 = (await readFile(input.filePath)).toString("base64");
   const categories = input.categories.map((category) => `${category.slug} (${category.name})`).join(", ");
   const prompt = [
-    "Extract structured data from this document image.",
+    "Analyze this document image and infer what type of document it is from visual/content cues.",
     "Return strictly JSON keys: summary, fields, entities, categorySlug, categoryName, assetName, rawText.",
-    "For receipts include each line item and price, total, tax, date, phone, and store name where visible.",
+    "Extract fields that are natural for the detected document type and prioritize high-confidence values.",
+    "For transaction-like documents, include itemized rows and monetary totals when visible.",
+    "Do not emit file metadata fields such as file_name or file_size_bytes.",
+    forceDetailedFields
+      ? "Do not leave `fields` empty when the document contains extractable details; include all useful structured fields visible in the image."
+      : "",
     `Prefer one of these categories when relevant: ${categories}.`
-  ].join(" ");
+  ].filter(Boolean).join(" ");
 
   const response = await fetch("https://models.inference.ai.azure.com/chat/completions", {
     method: "POST",
@@ -245,7 +259,7 @@ async function runGitHubModelsExtractor(input: CopilotExtractionInput): Promise<
       Authorization: `Bearer ${token}`
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model,
       temperature: 0,
       response_format: { type: "json_object" },
       messages: [
@@ -259,7 +273,13 @@ async function runGitHubModelsExtractor(input: CopilotExtractionInput): Promise<
       ]
     })
   });
-  if (!response.ok) return null;
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "");
+    const hint = response.status === 401 || response.status === 403
+      ? " Your current token is not authorized for GitHub Models; use a PAT with Models read access via `VAULT_GITHUB_TOKEN`."
+      : "";
+    throw new Error(`Copilot model request failed (${response.status}) for '${model}'.${hint}${errorText ? ` ${errorText}` : ""}`);
+  }
 
   const json = (await response.json().catch(() => ({}))) as {
     choices?: Array<{ message?: { content?: string } }>;
@@ -285,14 +305,18 @@ function parseReceiptLineItems(ocrText: string): ExtractedField[] {
     /^([A-Za-z][A-Za-z0-9&().,'\-\/\s]{1,}?)\s+(?:(\d+)\s*x\s*)?([$€]?\s?\d+\.\d{2})$/i;
   const tableLineRegex =
     /^(\d+)\s+(.+?)\s+([$€]?\s?\d+(?:[.,]\d{2})?)\s+([$€]?\s?\d+(?:[.,]\d{2})?)$/i;
+  const trailingAmountRegex =
+    /^(.+?)\s+([$€]?\s?\d+(?:[.,]\d{2})?)$/i;
+  const parseMoney = (value: string): number => Number(value.replace(/[$€\s]/g, "").replace(",", "."));
+  const consumedLines = new Set<string>();
   let itemIndex = 1;
   for (const line of lines) {
     const tableMatch = line.match(tableLineRegex);
     if (tableMatch) {
       const quantity = Number(tableMatch[1]);
       const name = tableMatch[2].trim();
-      const unitPrice = Number(tableMatch[3].replace(/[$€\s]/g, "").replace(",", "."));
-      const amount = Number(tableMatch[4].replace(/[$€\s]/g, "").replace(",", "."));
+      const unitPrice = parseMoney(tableMatch[3]);
+      const amount = parseMoney(tableMatch[4]);
       if (
         Number.isFinite(quantity) &&
         quantity > 0 &&
@@ -306,6 +330,7 @@ function parseReceiptLineItems(ocrText: string): ExtractedField[] {
         fields.push({ key: `line_item_${itemIndex}_unit_price`, value: unitPrice, confidence: 0.8, source: "ocr" });
         fields.push({ key: `line_item_${itemIndex}_price`, value: amount, confidence: 0.83, source: "ocr" });
         itemIndex += 1;
+        consumedLines.add(line);
         continue;
       }
     }
@@ -314,7 +339,7 @@ function parseReceiptLineItems(ocrText: string): ExtractedField[] {
     if (!match) continue;
     const name = match[1].trim();
     const quantity = match[2] ? Number(match[2]) : undefined;
-    const amount = Number(match[3].replace(/[$€\s]/g, "").replace(",", "."));
+    const amount = parseMoney(match[3]);
     if (!Number.isFinite(amount) || amount <= 0) continue;
     if (/^(total|receipt total|tax|subtotal|cash receipt|thank you|credit card|network id|manager)\b/i.test(name)) continue;
     fields.push({ key: `line_item_${itemIndex}_name`, value: name, confidence: 0.8, source: "ocr" });
@@ -323,9 +348,107 @@ function parseReceiptLineItems(ocrText: string): ExtractedField[] {
       fields.push({ key: `line_item_${itemIndex}_qty`, value: quantity, confidence: 0.72, source: "ocr" });
     }
     itemIndex += 1;
+    consumedLines.add(line);
+
+    continue;
+  }
+
+  for (const line of lines) {
+    if (consumedLines.has(line)) continue;
+    if (/^(total|receipt total|tax|subtotal|cash|change|tender|visa|mastercard|thank you)\b/i.test(line)) continue;
+    const match = line.match(trailingAmountRegex);
+    if (!match) continue;
+    const name = match[1].trim().replace(/\s{2,}/g, " ");
+    const amount = parseMoney(match[2]);
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    if (!/[A-Za-z]{2,}/.test(name)) continue;
+    fields.push({ key: `line_item_${itemIndex}_name`, value: name, confidence: 0.75, source: "ocr" });
+    fields.push({ key: `line_item_${itemIndex}_price`, value: amount, confidence: 0.75, source: "ocr" });
+    itemIndex += 1;
   }
 
   return fields;
+}
+
+function shouldParseWorkoutSchedule(ocrText: string): boolean {
+  const normalized = ocrText.toLowerCase();
+  const dayMatches = (normalized.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/g) ?? []).length;
+  const hasWorkoutSignals = /\b(workout|exercise|schedule|rest day|cardio|biceps|triceps|legs|chest|back|lats)\b/.test(normalized);
+  const looksLikeReceipt = /\b(receipt|invoice|subtotal|tax|total|cashier|payment)\b/.test(normalized);
+  if (looksLikeReceipt) return false;
+  return dayMatches >= 2 && hasWorkoutSignals;
+}
+
+function parseWorkoutScheduleFields(ocrText: string): { fields: ExtractedField[]; entities: string[] } {
+  const fields: ExtractedField[] = [];
+  const entities = new Set<string>();
+  const lines = ocrText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[^a-zA-Z0-9&\s-]/g, " ").replace(/\s+/g, " ").trim())
+    .filter((line) => line.length > 0);
+  const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  const schedule = new Map<string, string>();
+
+  const normalizeWorkout = (input: string): string =>
+    input
+      .replace(/\b6\b/g, "&")
+      .replace(/\bbice\b/i, "Biceps")
+      .replace(/\blats?\b/i, "Lats")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+  const assignNextMissingDay = (value: string): void => {
+    const targetDay = days.find((day) => !schedule.has(day) && day !== "sunday");
+    if (!targetDay) return;
+    schedule.set(targetDay, normalizeWorkout(value));
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.toLowerCase();
+    const matchedDay = days.find((day) => line.includes(day));
+    if (matchedDay) {
+      const remainder = rawLine
+        .replace(new RegExp(matchedDay, "i"), "")
+        .replace(/^[\s:-]+/, "")
+        .trim();
+      if (remainder.length > 0) {
+        schedule.set(matchedDay, normalizeWorkout(remainder));
+      } else if (matchedDay === "sunday" && line.includes("rest")) {
+        schedule.set("sunday", "Rest Day");
+      }
+      continue;
+    }
+
+    if (/[a-z]{3,}\s*&\s*[a-z]{3,}/i.test(rawLine)) {
+      assignNextMissingDay(rawLine);
+      continue;
+    }
+    if (/rest day/i.test(rawLine)) {
+      schedule.set("sunday", "Rest Day");
+      continue;
+    }
+  }
+
+  for (const [day, workout] of schedule.entries()) {
+    fields.push({
+      key: `workout_${day}`,
+      value: workout,
+      confidence: 0.75,
+      source: "ocr"
+    });
+    workout
+      .split("&")
+      .map((part) => part.trim())
+      .filter((part) => /^[A-Za-z][A-Za-z\s]{2,}$/.test(part))
+      .forEach((part) => entities.add(part));
+  }
+
+  if (schedule.get("sunday") === "Rest Day") {
+    fields.push({ key: "rest_day", value: "Sunday", confidence: 0.78, source: "ocr" });
+  }
+
+  return { fields, entities: [...entities].slice(0, 20) };
 }
 
 function createFallbackExtraction(
@@ -338,10 +461,8 @@ function createFallbackExtraction(
   const categorySlug = inferCategorySlug(fileName, categories, searchableText);
   const categoryName = categories.find((category) => category.slug === categorySlug)?.name ?? "General";
 
-  const fields: ExtractedField[] = [
-    { key: "file_name", value: fileName, confidence: 0.65, source: "ai" },
-    { key: "file_size_bytes", value: fileSizeBytes, confidence: 0.95, source: "ai" }
-  ];
+  const fields: ExtractedField[] = [];
+  const entities: string[] = [];
 
   const storeLine = (ocrText ?? "")
     .split(/\r?\n/)
@@ -373,6 +494,11 @@ function createFallbackExtraction(
   }
   if (ocrText) {
     fields.push(...parseReceiptLineItems(ocrText));
+    if (shouldParseWorkoutSchedule(ocrText)) {
+      const workout = parseWorkoutScheduleFields(ocrText);
+      fields.push(...workout.fields);
+      workout.entities.forEach((entity) => entities.push(entity));
+    }
   }
 
   return {
@@ -381,7 +507,7 @@ function createFallbackExtraction(
         ? `Uploaded ${fileName}. OCR-assisted extraction inferred ${categoryName} category.`
         : `Uploaded ${fileName} (${fileSizeBytes} bytes). Category inferred as ${categoryName}.`,
     fields,
-    entities: storeLine ? [storeLine] : [],
+    entities: [...new Set((storeLine ? [storeLine] : []).concat(entities))],
     categorySlug,
     categoryName,
     assetName: inferAssetName(fields, categoryName, fileName),
@@ -395,9 +521,11 @@ function isReceiptLike(extraction: ClientExtractionResult, fileName: string): bo
 }
 
 function shouldAugmentFromOcr(extraction: ClientExtractionResult, fileName: string): boolean {
-  if (!isReceiptLike(extraction, fileName)) return false;
-  const lineItemCount = extraction.fields.filter((field) => field.key.startsWith("line_item_")).length;
-  return extraction.fields.length < 10 || lineItemCount < 4;
+  if (isReceiptLike(extraction, fileName)) {
+    const lineItemCount = extraction.fields.filter((field) => field.key.startsWith("line_item_")).length;
+    return extraction.fields.length < 10 || lineItemCount < 4;
+  }
+  return extraction.fields.length < 6;
 }
 
 function mergeExtractions(primary: ClientExtractionResult, fallback: ClientExtractionResult): ClientExtractionResult {
@@ -480,7 +608,8 @@ export async function extractWithCopilot(
   filePath: string,
   mimeType: string,
   categories: Category[],
-  commandLine?: string
+  commandLine?: string,
+  preferredModel = "gemini-3-pro"
 ): Promise<ClientExtractionResult> {
   const metadata = await stat(filePath);
   const fileName = basename(filePath);
@@ -493,28 +622,24 @@ export async function extractWithCopilot(
   };
 
   if (!commandLine) {
-    const aiResult = await runGitHubModelsExtractor(input);
-    if (aiResult) {
-      if (mimeType.startsWith("image/") && shouldAugmentFromOcr(aiResult, fileName)) {
-        const ocrText = await runLocalTesseract(filePath);
-        if (ocrText) {
-          const fallback = createFallbackExtraction(fileName, metadata.size, categories, ocrText);
-          return mergeExtractions(aiResult, fallback);
-        }
-      }
-      return aiResult;
+    const aiResult = await requestGitHubModelsExtraction(input, preferredModel);
+    if (!aiResult) {
+      throw new Error(`Copilot extraction failed with model '${preferredModel}'.`);
     }
-    const ocrText = mimeType.startsWith("image/") ? await runLocalTesseract(filePath) : null;
-    return createFallbackExtraction(fileName, metadata.size, categories, ocrText ?? undefined);
+    if (aiResult.fields.length > 0) return aiResult;
+
+    const retryResult = await requestGitHubModelsExtraction(input, preferredModel, true);
+    if (retryResult?.fields.length) return retryResult;
+
+    if (aiResult.rawText && aiResult.rawText.trim().length > 0) {
+      const rawTextDerived = createFallbackExtraction(fileName, metadata.size, categories, aiResult.rawText);
+      const merged = mergeExtractions(aiResult, rawTextDerived);
+      if (merged.fields.length > 0) return merged;
+    }
+
+    throw new Error(`Copilot extraction failed with model '${preferredModel}'.`);
   }
 
   const copilotResult = await runCopilotExtractor(commandLine, input);
-  if (mimeType.startsWith("image/") && shouldAugmentFromOcr(copilotResult, fileName)) {
-    const ocrText = await runLocalTesseract(filePath);
-    if (ocrText) {
-      const fallback = createFallbackExtraction(fileName, metadata.size, categories, ocrText);
-      return mergeExtractions(copilotResult, fallback);
-    }
-  }
   return copilotResult;
 }

@@ -62,6 +62,16 @@ export function registerConfigCommand(program: Command): void {
           return;
         }
 
+        if (normalized === "copilot-model") {
+          const updated = {
+            ...local,
+            copilotModel: value
+          };
+          await setConfig(updated);
+          printOutput(updated, { json: options.json });
+          return;
+        }
+
         const token = await getAccessToken();
         const client = new ApiClient(local.apiBaseUrl, token);
 

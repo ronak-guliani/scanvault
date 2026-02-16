@@ -63,9 +63,14 @@ test('printOutput json mode emits JSON string', () => {
 });
 
 test('printOutput compacts asset arrays for terminal table output', () => {
-  const rows = [];
-  const originalTable = console.table;
-  console.table = (value) => rows.push(value);
+  const writes = [];
+  const originalWrite = process.stdout.write.bind(process.stdout);
+  process.stdout.write = (chunk, encoding, cb) => {
+    writes.push(String(chunk));
+    if (typeof encoding === 'function') encoding();
+    if (typeof cb === 'function') cb();
+    return true;
+  };
 
   const input = [
     {
@@ -91,13 +96,13 @@ test('printOutput compacts asset arrays for terminal table output', () => {
   try {
     withTty(true, () => printOutput(input));
   } finally {
-    console.table = originalTable;
+    process.stdout.write = originalWrite;
   }
 
-  assert.equal(rows.length, 1);
-  assert.equal(Array.isArray(rows[0]), true);
-  assert.deepEqual(Object.keys(rows[0][0]), ['id', 'file', 'category', 'status', 'size', 'createdAt', 'summary']);
-  assert.equal(rows[0][0].id, '38e0041d-6cdd-4ab6-b775-b8c18fa1458a');
+  const output = writes.join('');
+  assert.match(output, /│ id\s+│ file\s+│ category\s+│ status\s+│ size\s+│ createdAt\s+│ summary\s+│/);
+  assert.match(output, /38e0041d-6cdd-4ab6-b775-b8c18fa1458a/);
+  assert.doesNotMatch(output, /\(index\)/);
 });
 
 test('printOutput empty arrays show no results in terminal mode', () => {

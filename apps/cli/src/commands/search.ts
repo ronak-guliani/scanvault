@@ -30,7 +30,12 @@ export function registerSearchCommand(program: Command): void {
           return;
         }
 
-        printOutput(result, { json: options.json, quiet: options.quiet });
+        if (options.json) {
+          printOutput(result, { json: true, quiet: options.quiet });
+          return;
+        }
+
+        printOutput(result.items ?? [], { quiet: options.quiet });
       })
     );
 }

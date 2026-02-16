@@ -23,6 +23,83 @@ function addField(
   });
 }
 
+function parseReceiptLineItems(rawText: string): ExtractedField[] {
+  const fields: ExtractedField[] = [];
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  const trailingAmountRegex = /^(.+?)\s+([$€]?\s?\d+(?:[.,]\d{2})?)$/i;
+  let itemIndex = 1;
+
+  for (const line of lines) {
+    if (/^(total|receipt total|tax|subtotal|cash|change|tender|visa|mastercard|thank you)\b/i.test(line)) continue;
+    const match = line.match(trailingAmountRegex);
+    if (!match) continue;
+    const name = match[1].trim().replace(/\s{2,}/g, " ");
+    const amount = Number(match[2].replace(/[$€\s]/g, "").replace(",", "."));
+    if (!Number.isFinite(amount) || amount <= 0) continue;
+    if (!/[A-Za-z]{2,}/.test(name)) continue;
+    fields.push({ key: `line_item_${itemIndex}_name`, value: name, confidence: 0.72, source: "ocr" });
+    fields.push({ key: `line_item_${itemIndex}_price`, value: amount, confidence: 0.72, source: "ocr" });
+    itemIndex += 1;
+  }
+
+  return fields;
+}
+
+function shouldParseWorkoutSchedule(rawText: string): boolean {
+  const normalized = rawText.toLowerCase();
+  const dayMatches = (normalized.match(/\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/g) ?? []).length;
+  const hasWorkoutSignals = /\b(workout|exercise|schedule|rest day|cardio|biceps|triceps|legs|chest|back|lats)\b/.test(normalized);
+  const looksLikeReceipt = /\b(receipt|invoice|subtotal|tax|total|cashier|payment)\b/.test(normalized);
+  if (looksLikeReceipt) return false;
+  return dayMatches >= 2 && hasWorkoutSignals;
+}
+
+function parseWorkoutScheduleFields(rawText: string): ExtractedField[] {
+  const fields: ExtractedField[] = [];
+  const lines = rawText
+    .split(/\r?\n/)
+    .map((line) => line.replace(/[^a-zA-Z0-9&\s-]/g, " ").replace(/\s+/g, " ").trim())
+    .filter((line) => line.length > 0);
+  const days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
+  const schedule = new Map<string, string>();
+  const normalizeWorkout = (input: string): string =>
+    input
+      .replace(/\b6\b/g, "&")
+      .replace(/\bbice\b/i, "Biceps")
+      .replace(/\blats?\b/i, "Lats")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/\b\w/g, (letter) => letter.toUpperCase());
+
+  for (const rawLine of lines) {
+    const line = rawLine.toLowerCase();
+    const matchedDay = days.find((day) => line.includes(day));
+    if (!matchedDay) {
+      if (/rest day/i.test(rawLine)) schedule.set("sunday", "Rest Day");
+      continue;
+    }
+
+    const remainder = rawLine.replace(new RegExp(matchedDay, "i"), "").replace(/^[\s:-]+/, "").trim();
+    if (remainder.length > 0) {
+      schedule.set(matchedDay, normalizeWorkout(remainder));
+    } else if (matchedDay === "sunday" && line.includes("rest")) {
+      schedule.set("sunday", "Rest Day");
+    }
+  }
+
+  for (const [day, workout] of schedule.entries()) {
+    addField(fields, `workout_${day}`, workout);
+  }
+  if (schedule.get("sunday") === "Rest Day") {
+    addField(fields, "rest_day", "Sunday");
+  }
+
+  return fields;
+}
+
 function extractFields(rawText: string): ExtractedField[] {
   const fields: ExtractedField[] = [];
 
@@ -64,6 +141,11 @@ function extractFields(rawText: string): ExtractedField[] {
   const caloriesPattern = /(\d+(?:\.\d+)?)\s?(k?cal)/gi;
   for (const match of rawText.matchAll(caloriesPattern)) {
     addField(fields, "calories", Number(match[1]), "kcal");
+  }
+
+  fields.push(...parseReceiptLineItems(rawText));
+  if (shouldParseWorkoutSchedule(rawText)) {
+    fields.push(...parseWorkoutScheduleFields(rawText));
   }
 
   return fields;

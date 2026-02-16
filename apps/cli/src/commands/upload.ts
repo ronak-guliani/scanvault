@@ -22,6 +22,7 @@ export function registerUploadCommand(program: Command): void {
     .option("--category <category>", "Override category for uploaded files")
     .option("--copilot", "Use Copilot extraction before upload confirmation")
     .option("--copilot-cmd <command>", "Override Copilot extractor command for this run")
+    .option("--copilot-model <model>", "Override Copilot model for extraction")
     .option("--json", "Output JSON")
     .option("--quiet", "Minimal output")
     .action(
@@ -32,6 +33,7 @@ export function registerUploadCommand(program: Command): void {
             category?: string;
             copilot?: boolean;
             copilotCmd?: string;
+            copilotModel?: string;
             json?: boolean;
             quiet?: boolean;
           }
@@ -42,6 +44,7 @@ export function registerUploadCommand(program: Command): void {
           const settings = await client.getSettings();
           const shouldUseCopilot = options.copilot === true || !settings.aiKeyVaultRef;
           const extractorCommand = options.copilotCmd ?? config.copilotExtractorCommand;
+          const copilotModel = options.copilotModel ?? config.copilotModel;
           const categories = shouldUseCopilot ? await client.listCategories() : [];
 
           const uploaded: Array<{ file: string; assetId: string; status: string; mode: "copilot" | "server" }> = [];
@@ -49,7 +52,7 @@ export function registerUploadCommand(program: Command): void {
           for (const filePath of files) {
             try {
               const extracted = shouldUseCopilot
-                ? await extractWithCopilot(filePath, inferMimeType(filePath), categories, extractorCommand)
+                ? await extractWithCopilot(filePath, inferMimeType(filePath), categories, extractorCommand, copilotModel)
                 : undefined;
               if (extracted && options.category) {
                 extracted.categoryName = options.category;
