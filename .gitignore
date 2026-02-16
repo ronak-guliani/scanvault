@@ -1,3 +1,20 @@
+# Dependencies
 node_modules
 
+# Build output
+dist
+.next
+*.tsbuildinfo
+
+# Environment / secrets
 **/.env.local
+**/.env
+local.settings.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea
