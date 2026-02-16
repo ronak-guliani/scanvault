@@ -36,6 +36,7 @@ export interface ClientExtractionResult {
   entities: string[];
   categoryName?: string;
   categorySlug?: string;
+  assetName?: string;
   rawText?: string;
 }
 

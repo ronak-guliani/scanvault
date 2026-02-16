@@ -26,6 +26,18 @@ function normalizeCategorySlug(input: string): string {
     .slice(0, 50);
 }
 
+function normalizeAssetFileName(input: string, fallback: string): string {
+  const fallbackExtension = fallback.includes(".") ? fallback.slice(fallback.lastIndexOf(".")) : "";
+  const trimmed = input.trim().replace(/\s+/g, " ");
+  const safe = trimmed
+    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/\.+$/g, "")
+    .slice(0, 220);
+  if (!safe) return fallback;
+  if (/\.[A-Za-z0-9]{2,5}$/.test(safe)) return safe;
+  return `${safe}${fallbackExtension}`;
+}
+
 export async function confirmUploadHandler(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
   try {
     const auth = await requireAuth(request);
@@ -46,6 +58,9 @@ export async function confirmUploadHandler(request: HttpRequest, context: Invoca
 
       const readyAsset: Asset = {
         ...asset,
+        originalFileName: body.extracted.assetName
+          ? normalizeAssetFileName(body.extracted.assetName, asset.originalFileName)
+          : asset.originalFileName,
         normalizedBlobUrls,
         summary: body.extracted.summary.trim(),
         fields: body.extracted.fields.map((field) => ({

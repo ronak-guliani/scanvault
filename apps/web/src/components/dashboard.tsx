@@ -16,6 +16,10 @@ function statusBadge(status: Asset["status"]): string {
   return "badge badge-failed";
 }
 
+function isAssetPreviewable(mimeType: string): boolean {
+  return mimeType.startsWith("image/") || mimeType === "application/pdf";
+}
+
 /* ---------- Icons (inline SVG) ---------- */
 
 function IconVault() {
@@ -51,6 +55,16 @@ function IconPlus() {
   return (
     <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
       <path d="M8 3v10M3 8h10" />
+    </svg>
+  );
+}
+
+function IconDots() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+      <circle cx="3" cy="7" r="1.2" fill="currentColor" />
+      <circle cx="7" cy="7" r="1.2" fill="currentColor" />
+      <circle cx="11" cy="7" r="1.2" fill="currentColor" />
     </svg>
   );
 }
@@ -93,6 +107,14 @@ interface ReceiptDetailsView {
   extraFields: ExtractedField[];
 }
 
+interface EditableField {
+  key: string;
+  value: string;
+  unit: string;
+  confidence: string;
+  source: "ai" | "ocr";
+}
+
 function toDisplayValue(value: string | number): string {
   if (typeof value === "number") {
     return Number.isInteger(value) ? String(value) : value.toFixed(2);
@@ -112,6 +134,38 @@ function fieldLabel(key: string): string {
   return key
     .replace(/_/g, " ")
     .replace(/\b\w/g, (match) => match.toUpperCase());
+}
+
+function toEditableField(field: ExtractedField): EditableField {
+  return {
+    key: field.key,
+    value: String(field.value),
+    unit: field.unit ?? "",
+    confidence: String(field.confidence ?? 0.85),
+    source: field.source ?? "ai"
+  };
+}
+
+function normalizeEditableFields(fields: EditableField[]): ExtractedField[] {
+  return fields
+    .map((field): ExtractedField | null => {
+      const key = field.key.trim().slice(0, 100);
+      if (!key) return null;
+      const raw = field.value.trim();
+      const numeric = raw.match(/^-?\d+(?:\.\d+)?$/) ? Number(raw) : raw;
+      const confidenceNumber = Number(field.confidence);
+      const confidence = Number.isFinite(confidenceNumber)
+        ? Math.min(Math.max(confidenceNumber, 0), 1)
+        : 0.85;
+      return {
+        key,
+        value: numeric,
+        unit: field.unit.trim() || undefined,
+        confidence,
+        source: field.source === "ocr" ? "ocr" : "ai"
+      };
+    })
+    .filter((field): field is ExtractedField => field !== null);
 }
 
 function parseReceiptDetails(fields: ExtractedField[]): ReceiptDetailsView {
@@ -198,15 +252,29 @@ export function Dashboard(): JSX.Element {
   const [newCategoryName, setNewCategoryName] = useState("");
   const [expandedCategoryIds, setExpandedCategoryIds] = useState<Record<string, boolean>>({});
   const [categoryAssetSelections, setCategoryAssetSelections] = useState<Record<string, string>>({});
+  const [categoryAddPickerOpenById, setCategoryAddPickerOpenById] = useState<Record<string, boolean>>({});
+  const [assetMovePickerOpenById, setAssetMovePickerOpenById] = useState<Record<string, boolean>>({});
+  const [openCategoryMenuId, setOpenCategoryMenuId] = useState<string | null>(null);
+  const [openAssetMenuId, setOpenAssetMenuId] = useState<string | null>(null);
+  const [categoryMenuPos, setCategoryMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const [assetMenuPos, setAssetMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const [categoryThumbnailUrls, setCategoryThumbnailUrls] = useState<Record<string, string>>({});
   const [settingsMode, setSettingsMode] = useState<"ai" | "ocr">("ocr");
   const [settingsProvider, setSettingsProvider] = useState<"openai" | "anthropic" | "google">("openai");
   const [settingsApiKey, setSettingsApiKey] = useState("");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [isEditingExtraction, setIsEditingExtraction] = useState(false);
+  const [editSummary, setEditSummary] = useState("");
+  const [editEntitiesText, setEditEntitiesText] = useState("");
+  const [editFields, setEditFields] = useState<EditableField[]>([]);
+  const [editCategoryId, setEditCategoryId] = useState("");
   const [isBusy, setIsBusy] = useState(false);
   const [activeTab, setActiveTab] = useState<"assets" | "categories" | "settings">("assets");
   const [dragOver, setDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const statusByAssetIdRef = useRef<Record<string, Asset["status"]>>({});
+  const hasStatusBaselineRef = useRef(false);
 
   const client = useMemo(() => new WebApiClient(), []);
   const categoryNameById = useMemo(
@@ -239,8 +307,53 @@ export function Dashboard(): JSX.Element {
     });
   }, [categories]);
 
+  useEffect(() => {
+    if (activeTab !== "categories") return;
+
+    const previewableAssets = assets.filter((asset) => isAssetPreviewable(asset.mimeType));
+    const missingPreviews = previewableAssets.filter((asset) => !categoryThumbnailUrls[asset.id]);
+    if (missingPreviews.length === 0) return;
+
+    let cancelled = false;
+    const loadPreviews = async (): Promise<void> => {
+      for (const asset of missingPreviews) {
+        try {
+          const url = await client.getAssetViewUrl(asset.id);
+          if (cancelled) return;
+          setCategoryThumbnailUrls((previous) => (previous[asset.id] ? previous : { ...previous, [asset.id]: url }));
+        } catch {}
+      }
+    };
+
+    void loadPreviews();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, assets, categoryThumbnailUrls, client]);
+
   const refreshAssets = useCallback(async (): Promise<void> => {
     const result = await client.listAssets({ limit: 50 });
+    const nextStatusById = result.items.reduce<Record<string, Asset["status"]>>((acc, asset) => {
+      acc[asset.id] = asset.status;
+      return acc;
+    }, {});
+    if (hasStatusBaselineRef.current) {
+      for (const asset of result.items) {
+        const previousStatus = statusByAssetIdRef.current[asset.id];
+        if (!previousStatus || previousStatus === asset.status) continue;
+        if ((previousStatus === "processing" || previousStatus === "uploading") && asset.status === "ready") {
+          setNotice(`Extraction complete: ${asset.originalFileName}`);
+          break;
+        }
+        if ((previousStatus === "processing" || previousStatus === "uploading") && asset.status === "failed") {
+          setErrorMessage(`Extraction failed: ${asset.originalFileName}`);
+          break;
+        }
+      }
+    }
+    statusByAssetIdRef.current = nextStatusById;
+    hasStatusBaselineRef.current = true;
     setAssets(result.items);
   }, [client]);
 
@@ -251,6 +364,11 @@ export function Dashboard(): JSX.Element {
       client.getSettings()
     ]);
     setAssets(assetData.items);
+    statusByAssetIdRef.current = assetData.items.reduce<Record<string, Asset["status"]>>((acc, asset) => {
+      acc[asset.id] = asset.status;
+      return acc;
+    }, {});
+    hasStatusBaselineRef.current = true;
     setCategories(categoryData);
     setSettings(settingsData);
     setSettingsMode(settingsData.extractionMode);
@@ -259,10 +377,52 @@ export function Dashboard(): JSX.Element {
 
   useEffect(() => {
     if (!session?.user) return;
+
+    let timer: number | null = null;
+
+    const stopPolling = (): void => {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const shouldPoll = (): boolean => document.visibilityState === "visible" && document.hasFocus();
+
+    const startPolling = (): void => {
+      if (timer !== null || !shouldPoll()) return;
+      timer = window.setInterval(() => {
+        if (!shouldPoll()) {
+          stopPolling();
+          return;
+        }
+        void refreshAssets().catch(() => {});
+      }, 5000);
+    };
+
+    const handleActivityChange = (): void => {
+      if (!shouldPoll()) {
+        stopPolling();
+        return;
+      }
+      void refreshAssets().catch(() => {});
+      startPolling();
+    };
+
     void refreshAll().catch((e: unknown) => setErrorMessage(e instanceof Error ? e.message : "Failed to load dashboard"));
-    const timer = window.setInterval(() => void refreshAssets().catch(() => {}), 5000);
-    return () => window.clearInterval(timer);
-  }, [session, refreshAll, refreshAssets]);
+    startPolling();
+
+    document.addEventListener("visibilitychange", handleActivityChange);
+    window.addEventListener("focus", handleActivityChange);
+    window.addEventListener("blur", handleActivityChange);
+
+    return () => {
+      stopPolling();
+      document.removeEventListener("visibilitychange", handleActivityChange);
+      window.removeEventListener("focus", handleActivityChange);
+      window.removeEventListener("blur", handleActivityChange);
+    };
+  }, [session?.user?.id, refreshAll, refreshAssets]);
 
   const handleSignIn = useCallback(async (provider: "microsoft" | "google"): Promise<void> => {
     setErrorMessage(null); setIsBusy(true);
@@ -273,6 +433,8 @@ export function Dashboard(): JSX.Element {
   const handleLogout = useCallback(async (): Promise<void> => {
     setIsBusy(true);
     try { await authClient.signOut(); } catch {}
+    statusByAssetIdRef.current = {};
+    hasStatusBaselineRef.current = false;
     setAssets([]); setCategories([]); setSettings(null); setSelectedAsset(null); setIsBusy(false);
   }, []);
 
@@ -300,10 +462,55 @@ export function Dashboard(): JSX.Element {
 
   const handleAssetDetails = useCallback(async (id: string): Promise<void> => {
     setErrorMessage(null); setIsBusy(true);
-    try { setSelectedAsset(await client.getAsset(id)); }
+    try {
+      const asset = await client.getAsset(id);
+      setSelectedAsset(asset);
+      setIsEditingExtraction(false);
+    }
     catch (e) { setErrorMessage(e instanceof Error ? e.message : "Failed to load asset"); }
     finally { setIsBusy(false); }
   }, [client]);
+
+  const handleStartEditExtraction = useCallback((): void => {
+    if (!selectedAsset) return;
+    setEditSummary(selectedAsset.summary ?? "");
+    setEditEntitiesText(selectedAsset.entities.join(", "));
+    setEditFields(selectedAsset.fields.map(toEditableField));
+    setEditCategoryId(selectedAsset.categoryId);
+    setIsEditingExtraction(true);
+  }, [selectedAsset]);
+
+  const handleCancelEditExtraction = useCallback((): void => {
+    setIsEditingExtraction(false);
+  }, []);
+
+  const handleSaveExtractionFix = useCallback(async (): Promise<void> => {
+    if (!selectedAsset) return;
+    setErrorMessage(null);
+    setNotice(null);
+    setIsBusy(true);
+    try {
+      const parsedFields = normalizeEditableFields(editFields);
+      const entities = editEntitiesText
+        .split(",")
+        .map((entity) => entity.trim())
+        .filter((entity) => entity.length > 0);
+      const updated = await client.updateAssetExtraction(selectedAsset.id, {
+        summary: editSummary.trim(),
+        fields: parsedFields,
+        entities,
+        categoryId: editCategoryId || undefined
+      });
+      setSelectedAsset(updated);
+      setAssets((previous) => previous.map((asset) => (asset.id === updated.id ? updated : asset)));
+      setIsEditingExtraction(false);
+      setNotice("Extraction details updated");
+    } catch (e) {
+      setErrorMessage(e instanceof Error ? e.message : "Failed to update extraction");
+    } finally {
+      setIsBusy(false);
+    }
+  }, [client, editCategoryId, editEntitiesText, editFields, editSummary, selectedAsset]);
 
   const handleOpenPreview = useCallback(async (asset: Asset): Promise<void> => {
     setErrorMessage(null);
@@ -335,6 +542,22 @@ export function Dashboard(): JSX.Element {
     finally { setIsBusy(false); }
   }, [client, newCategoryName]);
 
+  const handleRenameCategory = useCallback(async (cat: Category): Promise<void> => {
+    const nextName = window.prompt("Rename category", cat.name)?.trim();
+    if (!nextName || nextName === cat.name) return;
+
+    setErrorMessage(null); setNotice(null); setIsBusy(true);
+    try {
+      await client.updateCategory(cat.id, { name: nextName });
+      setCategories(await client.listCategories());
+      setNotice("Category renamed");
+    } catch (e) {
+      setErrorMessage(e instanceof Error ? e.message : "Category rename failed");
+    } finally {
+      setIsBusy(false);
+    }
+  }, [client]);
+
   const handleMoveAssetCategory = useCallback(async (assetId: string, categoryId: string, successMessage?: string): Promise<void> => {
     setErrorMessage(null); setNotice(null); setIsBusy(true);
     try {
@@ -354,6 +577,7 @@ export function Dashboard(): JSX.Element {
     if (!selectedAssetId) return;
     await handleMoveAssetCategory(selectedAssetId, categoryId, "Asset added to category");
     setCategoryAssetSelections((previous) => ({ ...previous, [categoryId]: "" }));
+    setCategoryAddPickerOpenById((previous) => ({ ...previous, [categoryId]: false }));
   }, [categoryAssetSelections, handleMoveAssetCategory]);
 
   const handleDeleteCategory = useCallback(async (cat: Category, categoryAssetCount: number): Promise<void> => {
@@ -397,6 +621,31 @@ export function Dashboard(): JSX.Element {
     setExpandedCategoryIds((previous) => ({
       ...previous,
       [categoryId]: !(previous[categoryId] ?? true)
+    }));
+  }, []);
+
+  const toggleCategoryAddPicker = useCallback((categoryId: string): void => {
+    setCategoryAddPickerOpenById((previous) => ({
+      ...previous,
+      [categoryId]: !(previous[categoryId] ?? false)
+    }));
+  }, []);
+
+  const toggleAllCategoriesExpanded = useCallback((): void => {
+    setExpandedCategoryIds((previous) => {
+      const allExpanded = categories.length > 0 && categories.every((category) => previous[category.id] ?? true);
+      const nextExpanded = !allExpanded;
+      return categories.reduce<Record<string, boolean>>((acc, category) => {
+        acc[category.id] = nextExpanded;
+        return acc;
+      }, {});
+    });
+  }, [categories]);
+
+  const toggleAssetMovePicker = useCallback((assetId: string): void => {
+    setAssetMovePickerOpenById((previous) => ({
+      ...previous,
+      [assetId]: !(previous[assetId] ?? false)
     }));
   }, []);
 
@@ -622,15 +871,151 @@ export function Dashboard(): JSX.Element {
                     <p className="font-mono text-[10px] text-zinc-600 mt-0.5">{selectedAsset.id}</p>
                     <p className="font-mono text-[10px] text-zinc-500 mt-1">{categoryNameById[selectedAsset.categoryId] ?? "Uncategorized"}</p>
                   </div>
-                  {(selectedAsset.mimeType.startsWith("image/") || selectedAsset.mimeType === "application/pdf") && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(selectedAsset.mimeType.startsWith("image/") || selectedAsset.mimeType === "application/pdf") && (
+                      <button
+                        type="button"
+                        onClick={() => void handleOpenPreview(selectedAsset)}
+                        disabled={isBusy}
+                        className="btn-secondary w-auto text-xs"
+                      >
+                        Quick Preview
+                      </button>
+                    )}
                     <button
                       type="button"
-                      onClick={() => void handleOpenPreview(selectedAsset)}
+                      onClick={handleStartEditExtraction}
                       disabled={isBusy}
-                      className="btn-secondary text-xs"
+                      className="btn-secondary w-auto text-xs"
                     >
-                      Quick Preview
+                      Fix Extraction
                     </button>
+                  </div>
+                  {isEditingExtraction && (
+                    <div className="space-y-2 rounded-md border border-zinc-800/80 bg-surface-2 p-3">
+                      <p className="font-display text-[10px] uppercase tracking-widest text-zinc-500">Edit Extracted Data</p>
+                      <label className="space-y-1 block">
+                        <span className="font-mono text-[10px] text-zinc-500">Summary</span>
+                        <textarea
+                          value={editSummary}
+                          onChange={(event) => setEditSummary(event.target.value)}
+                          className="input-field min-h-[70px]"
+                        />
+                      </label>
+                      <label className="space-y-1 block">
+                        <span className="font-mono text-[10px] text-zinc-500">Category</span>
+                        <select value={editCategoryId} onChange={(event) => setEditCategoryId(event.target.value)} className="select-field">
+                          {categories.map((category) => (
+                            <option key={category.id} value={category.id}>{category.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-1 block">
+                        <span className="font-mono text-[10px] text-zinc-500">Entities (comma separated)</span>
+                        <input value={editEntitiesText} onChange={(event) => setEditEntitiesText(event.target.value)} className="input-field" />
+                      </label>
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <span className="font-mono text-[10px] text-zinc-500">Fields</span>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setEditFields((previous) => [...previous, { key: "", value: "", unit: "", confidence: "0.85", source: "ai" }])
+                            }
+                            className="btn-secondary w-auto px-2 py-1 text-[10px]"
+                          >
+                            + Field
+                          </button>
+                        </div>
+                        <div className="space-y-2">
+                          {editFields.map((field, index) => (
+                            <div key={`${index}-${field.key}`} className="rounded-md border border-zinc-800/80 bg-black/15 p-2">
+                              <div className="mb-2 grid grid-cols-2 gap-2">
+                                <input
+                                  value={field.key}
+                                  onChange={(event) =>
+                                    setEditFields((previous) =>
+                                      previous.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, key: event.target.value } : item
+                                      )
+                                    )
+                                  }
+                                  placeholder="key"
+                                  className="input-field font-mono text-xs"
+                                />
+                                <input
+                                  value={field.value}
+                                  onChange={(event) =>
+                                    setEditFields((previous) =>
+                                      previous.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, value: event.target.value } : item
+                                      )
+                                    )
+                                  }
+                                  placeholder="value"
+                                  className="input-field font-mono text-xs"
+                                />
+                              </div>
+                              <div className="grid grid-cols-4 gap-2">
+                                <input
+                                  value={field.unit}
+                                  onChange={(event) =>
+                                    setEditFields((previous) =>
+                                      previous.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, unit: event.target.value } : item
+                                      )
+                                    )
+                                  }
+                                  placeholder="unit"
+                                  className="input-field text-xs"
+                                />
+                                <input
+                                  value={field.confidence}
+                                  onChange={(event) =>
+                                    setEditFields((previous) =>
+                                      previous.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, confidence: event.target.value } : item
+                                      )
+                                    )
+                                  }
+                                  placeholder="confidence"
+                                  className="input-field text-xs"
+                                />
+                                <select
+                                  value={field.source}
+                                  onChange={(event) =>
+                                    setEditFields((previous) =>
+                                      previous.map((item, itemIndex) =>
+                                        itemIndex === index ? { ...item, source: event.target.value === "ocr" ? "ocr" : "ai" } : item
+                                      )
+                                    )
+                                  }
+                                  className="select-field text-xs"
+                                >
+                                  <option value="ai">ai</option>
+                                  <option value="ocr">ocr</option>
+                                </select>
+                                <button
+                                  type="button"
+                                  onClick={() => setEditFields((previous) => previous.filter((_, itemIndex) => itemIndex !== index))}
+                                  className="btn-danger w-auto px-2 py-1 text-[10px]"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button type="button" onClick={() => void handleSaveExtractionFix()} disabled={isBusy} className="btn-primary text-xs">
+                          Save
+                        </button>
+                        <button type="button" onClick={handleCancelEditExtraction} disabled={isBusy} className="btn-secondary text-xs">
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
                   )}
                   <p className="font-body text-sm text-zinc-400 leading-relaxed">{selectedAsset.summary || "No summary yet"}</p>
                   {selectedAsset.fields.length > 0 && (() => {
@@ -751,17 +1136,36 @@ export function Dashboard(): JSX.Element {
 
       {/* Categories tab */}
       {activeTab === "categories" && (
-        <div className="space-y-4 animate-fade-in">
-          <div className="card p-5">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="animate-fade-in">
+          {(openCategoryMenuId !== null || openAssetMenuId !== null) && (
+            <button
+              type="button"
+              aria-label="Close menus"
+              onClick={() => {
+                setOpenCategoryMenuId(null);
+                setOpenAssetMenuId(null);
+                setCategoryMenuPos(null);
+                setAssetMenuPos(null);
+              }}
+              className="fixed inset-0 z-[9998] cursor-default bg-transparent"
+            />
+          )}
+
+          <div className="flex gap-4">
+          <div className="min-w-0 flex-1 space-y-4">
+
+          <div className="card p-4">
+            <div className="flex flex-wrap items-center gap-2">
               <input value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && void handleCreateCategory()}
                 placeholder="New category name" className="input-field max-w-xs" />
               <button type="button" onClick={() => void handleCreateCategory()} disabled={isBusy || !newCategoryName.trim()} className="btn-primary text-xs">
                 <IconPlus /> Add Category
               </button>
+              <button type="button" onClick={toggleAllCategoriesExpanded} disabled={categories.length === 0} className="btn-secondary ml-auto text-xs">
+                {categories.length > 0 && categories.every((category) => expandedCategoryIds[category.id] ?? true) ? "Collapse All" : "Expand All"}
+              </button>
             </div>
-            <p className="font-body text-xs text-amber-300/80">Deleting a category permanently deletes all assets inside it.</p>
           </div>
 
           {categories.map((category) => {
@@ -769,10 +1173,11 @@ export function Dashboard(): JSX.Element {
             const isExpanded = expandedCategoryIds[category.id] ?? true;
             const movableAssets = assets.filter((asset) => asset.categoryId !== category.id);
             const selectedAssetId = categoryAssetSelections[category.id] ?? "";
+            const isAddPickerOpen = categoryAddPickerOpenById[category.id] ?? false;
 
             return (
-              <section key={category.id} className="card overflow-hidden">
-                <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800/60 bg-surface-2 px-4 py-3">
+              <section key={category.id} className="card overflow-visible">
+                <div className="flex flex-wrap items-center gap-2 border-b border-zinc-800/60 bg-surface-2 px-3 py-2.5">
                   <button
                     type="button"
                     onClick={() => toggleCategoryExpanded(category.id)}
@@ -789,21 +1194,43 @@ export function Dashboard(): JSX.Element {
                     </svg>
                     <span className="font-display text-sm font-semibold text-zinc-100">{category.name}</span>
                   </button>
-                  <span className="font-mono text-[10px] text-zinc-500">{category.slug}</span>
-                  <span className="font-mono text-[10px] text-zinc-500">{categoryAssets.length} assets</span>
                   <button
                     type="button"
-                    onClick={() => void handleDeleteCategory(category, categoryAssets.length)}
-                    disabled={isBusy || category.slug === "general"}
-                    className="btn-danger ml-auto text-xs"
+                    onClick={() => toggleCategoryAddPicker(category.id)}
+                    disabled={isBusy || movableAssets.length === 0}
+                    className="btn-secondary px-2 py-1 text-xs"
+                    aria-label={`Add asset to ${category.name}`}
+                    title="Add asset"
                   >
-                    Remove Category
+                    <IconPlus />
                   </button>
+                  <span className="font-mono text-[10px] text-zinc-500">{categoryAssets.length} assets</span>
+                  <div className="ml-auto">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        setOpenAssetMenuId(null);
+                        setAssetMenuPos(null);
+                        if (openCategoryMenuId === category.id) {
+                          setOpenCategoryMenuId(null);
+                          setCategoryMenuPos(null);
+                        } else {
+                          setOpenCategoryMenuId(category.id);
+                          setCategoryMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+                        }
+                      }}
+                      className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-700 bg-surface-3 text-zinc-300 transition hover:bg-surface-4"
+                      aria-label={`Category menu for ${category.name}`}
+                    >
+                      <IconDots />
+                    </button>
+                  </div>
                 </div>
 
                 {isExpanded && (
-                  <div className="space-y-3 p-4">
-                    <div className="rounded-lg border border-zinc-800/60 bg-surface-2 p-3">
+                  <div className="space-y-2 p-3">
+                    {isAddPickerOpen && (
                       <div className="flex flex-wrap items-center gap-2">
                         <select
                           value={selectedAssetId}
@@ -815,7 +1242,7 @@ export function Dashboard(): JSX.Element {
                           }
                           className="select-field min-w-[220px]"
                         >
-                          <option value="">Select asset to add</option>
+                          <option value="">Choose asset</option>
                           {movableAssets.map((asset) => (
                             <option key={asset.id} value={asset.id}>
                               {asset.originalFileName}
@@ -831,70 +1258,114 @@ export function Dashboard(): JSX.Element {
                           Add Asset
                         </button>
                       </div>
-                    </div>
-
-                    {categoryAssets.length === 0 && (
-                      <p className="rounded-lg border border-zinc-800/60 bg-surface-2 px-4 py-3 font-body text-sm text-zinc-500">
-                        No assets in this category.
-                      </p>
                     )}
 
                     {categoryAssets.map((asset) => (
-                      <div key={asset.id} className="rounded-lg border border-zinc-800/60 bg-surface-2 p-4">
-                        <div className="flex flex-wrap items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <p className="truncate font-body text-sm font-medium text-zinc-200">{asset.originalFileName}</p>
-                            <p className="font-body text-xs text-zinc-500">{asset.summary || "No preview available yet"}</p>
+                      <div
+                        key={asset.id}
+                        data-asset-row
+                        onClick={() => {
+                          setOpenCategoryMenuId(null);
+                          setOpenAssetMenuId(null);
+                          setCategoryMenuPos(null);
+                          setAssetMenuPos(null);
+                          if (selectedAsset?.id === asset.id) {
+                            setSelectedAsset(null);
+                          } else {
+                            void handleAssetDetails(asset.id);
+                          }
+                        }}
+                        className={`relative cursor-pointer rounded-md border bg-surface-2 px-3 py-2 transition-colors ${selectedAsset?.id === asset.id ? "border-vault-700/40 ring-1 ring-vault-500/40" : "border-zinc-800/60 hover:border-zinc-700/70"}`}
+                      >
+                        <div className="flex flex-wrap items-start gap-3">
+                          <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded border border-zinc-700 bg-surface-3 text-zinc-500">
+                            {isAssetPreviewable(asset.mimeType) && categoryThumbnailUrls[asset.id] ? (
+                              asset.mimeType === "application/pdf" ? (
+                                <iframe src={`${categoryThumbnailUrls[asset.id]}#view=FitH`} title={`Preview ${asset.originalFileName}`} className="h-full w-full" />
+                              ) : (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={categoryThumbnailUrls[asset.id]} alt={asset.originalFileName} className="h-full w-full object-cover" />
+                              )
+                            ) : (
+                              <svg width="16" height="16" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.2">
+                                <path d="M4 2h6l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" />
+                                <path d="M10 2v4h4" />
+                              </svg>
+                            )}
                           </div>
-                          <span className={statusBadge(asset.status)}>{asset.status}</span>
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-start justify-between gap-2">
+                              <div className="min-w-0">
+                                <p className="truncate font-body text-sm font-medium text-zinc-200">{asset.originalFileName}</p>
+                                <p className="truncate font-body text-xs text-zinc-500">{asset.summary || "No summary"}</p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                {asset.status !== "ready" && <span className={statusBadge(asset.status)}>{asset.status}</span>}
+                                <div className="relative">
+                                  <button
+                                    type="button"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      const rect = event.currentTarget.getBoundingClientRect();
+                                      setOpenCategoryMenuId(null);
+                                      setCategoryMenuPos(null);
+                                      if (openAssetMenuId === asset.id) {
+                                        setOpenAssetMenuId(null);
+                                        setAssetMenuPos(null);
+                                      } else {
+                                        setOpenAssetMenuId(asset.id);
+                                        setAssetMenuPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+                                      }
+                                    }}
+                                    className="flex h-7 w-7 items-center justify-center rounded-md border border-zinc-700 bg-surface-3 text-zinc-300 transition hover:bg-surface-4"
+                                    aria-label={`Asset menu for ${asset.originalFileName}`}
+                                  >
+                                    <IconDots />
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
                         </div>
 
-                        <p className="mt-2 font-mono text-[10px] text-zinc-500">
-                          Type: {asset.mimeType} · Fields: {asset.fields.length} · Entities: {asset.entities.length} · Added: {new Date(asset.createdAt).toLocaleString()}
-                        </p>
-
-                        {asset.fields.length > 0 && (
-                          <div className="mt-2 flex flex-wrap gap-1.5">
-                            {asset.fields.slice(0, 4).map((field) => (
-                              <span key={`${asset.id}-${field.key}-${String(field.value)}`} className="rounded-full bg-surface-3 px-2 py-1 font-mono text-[10px] text-zinc-400">
-                                {field.key}: {String(field.value)}
-                              </span>
-                            ))}
-                          </div>
-                        )}
-
-                        <div className="mt-3 flex flex-wrap items-center gap-2">
-                          <select
-                            value={asset.categoryId}
-                            onChange={(event) => void handleMoveAssetCategory(asset.id, event.target.value)}
-                            disabled={isBusy}
-                            className="select-field min-w-[200px]"
-                          >
-                            {categories.map((optionCategory) => (
-                              <option key={optionCategory.id} value={optionCategory.id}>
-                                Move to: {optionCategory.name}
-                              </option>
-                            ))}
-                          </select>
-                          {(asset.mimeType.startsWith("image/") || asset.mimeType === "application/pdf") && (
+                        {(assetMovePickerOpenById[asset.id] ?? false) && (
+                          <div className="mt-2 flex flex-wrap items-center gap-2" onClick={(event) => event.stopPropagation()}>
+                            <select
+                              value=""
+                              onChange={(event) => {
+                                const nextCategoryId = event.target.value;
+                                if (!nextCategoryId) return;
+                                void handleMoveAssetCategory(asset.id, nextCategoryId);
+                                setAssetMovePickerOpenById((previous) => ({ ...previous, [asset.id]: false }));
+                              }}
+                              disabled={isBusy}
+                              className="select-field min-w-[160px]"
+                            >
+                              <option value="">Choose category</option>
+                              {categories
+                                .filter((optionCategory) => optionCategory.id !== asset.categoryId)
+                                .map((optionCategory) => (
+                                  <option key={optionCategory.id} value={optionCategory.id}>
+                                    {optionCategory.name}
+                                  </option>
+                                ))}
+                            </select>
                             <button
                               type="button"
-                              onClick={() => void handleOpenPreview(asset)}
-                              disabled={isBusy}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                
+                                setAssetMovePickerOpenById((previous) => ({
+                                  ...previous,
+                                  [asset.id]: false
+                                }));
+                              }}
                               className="btn-secondary text-xs"
                             >
-                              Preview
+                              Cancel
                             </button>
-                          )}
-                          <button
-                            type="button"
-                            onClick={() => void handleDeleteAsset(asset.id)}
-                            disabled={isBusy}
-                            className="btn-danger text-xs"
-                          >
-                            Remove Asset
-                          </button>
-                        </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -908,6 +1379,135 @@ export function Dashboard(): JSX.Element {
               <p className="font-body text-sm text-zinc-500">No categories available.</p>
             </div>
           )}
+          </div>{/* end left column */}
+
+          {/* Right: details pane */}
+          {selectedAsset && (
+            <div className="w-80 shrink-0">
+              <div className="sticky top-4">
+                <div className="card overflow-visible p-4">
+                  <div className="mb-3 flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <h3 className="truncate font-display text-sm font-semibold text-zinc-100">{selectedAsset.originalFileName}</h3>
+                      <p className="font-body text-xs text-zinc-500">{categoryNameById[selectedAsset.categoryId] ?? "Uncategorized"}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedAsset(null)}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded text-zinc-500 transition hover:bg-surface-3 hover:text-zinc-200"
+                      aria-label="Close details"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round">
+                        <path d="M2 2l8 8M10 2l-8 8" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {selectedAsset.status !== "ready" && (
+                    <div className="mb-3"><span className={statusBadge(selectedAsset.status)}>{selectedAsset.status}</span></div>
+                  )}
+
+                  <p className="font-body text-sm text-zinc-300">{selectedAsset.summary || "No summary yet"}</p>
+
+                  {selectedAsset.fields.length > 0 && (
+                    <div className="mt-3 space-y-1.5">
+                      {selectedAsset.fields.slice(0, 8).map((field) => (
+                        <div key={`${selectedAsset.id}-${field.key}-${String(field.value)}`} className="flex items-baseline justify-between gap-2 rounded-md bg-surface-2 px-3 py-2">
+                          <span className="font-mono text-xs text-zinc-400">{field.key}</span>
+                          <span className="font-body text-sm text-zinc-200 text-right">{String(field.value)}{field.unit ? ` ${field.unit}` : ""}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {selectedAsset.entities.length > 0 && (
+                    <div className="mt-3 flex flex-wrap gap-1.5">
+                      {selectedAsset.entities.map((entity) => (
+                        <span key={`${selectedAsset.id}-${entity}`} className="rounded-full bg-surface-3 px-2 py-1 font-mono text-[11px] text-zinc-400">
+                          {entity}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          </div>{/* end flex row */}
+
+          {/* Fixed-position dropdown menus — rendered outside all stacking contexts */}
+          {openCategoryMenuId !== null && categoryMenuPos !== null && (() => {
+            const menuCategory = categories.find((c) => c.id === openCategoryMenuId);
+            if (!menuCategory) return null;
+            const menuCategoryAssets = assetsByCategoryId[menuCategory.id] ?? [];
+            return (
+              <div
+                className="fixed z-[9999] min-w-[160px] rounded-md border border-zinc-700 bg-surface-1 p-1 shadow-xl"
+                style={{ top: categoryMenuPos.top, right: categoryMenuPos.right }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenCategoryMenuId(null);
+                    setCategoryMenuPos(null);
+                    void handleRenameCategory(menuCategory);
+                  }}
+                  disabled={isBusy}
+                  className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs text-zinc-200 hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Rename
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenCategoryMenuId(null);
+                    setCategoryMenuPos(null);
+                    void handleDeleteCategory(menuCategory, menuCategoryAssets.length);
+                  }}
+                  disabled={isBusy || menuCategory.slug === "general"}
+                  className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs text-red-300 hover:bg-red-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Remove Category
+                </button>
+              </div>
+            );
+          })()}
+
+          {openAssetMenuId !== null && assetMenuPos !== null && (() => {
+            const menuAsset = assets.find((a) => a.id === openAssetMenuId);
+            if (!menuAsset) return null;
+            return (
+              <div
+                className="fixed z-[9999] min-w-[140px] rounded-md border border-zinc-700 bg-surface-1 p-1 shadow-xl"
+                style={{ top: assetMenuPos.top, right: assetMenuPos.right }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenAssetMenuId(null);
+                    setAssetMenuPos(null);
+                    toggleAssetMovePicker(menuAsset.id);
+                  }}
+                  disabled={isBusy || categories.length <= 1}
+                  className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs text-zinc-200 hover:bg-surface-2 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Move
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenAssetMenuId(null);
+                    setAssetMenuPos(null);
+                    void handleDeleteAsset(menuAsset.id);
+                  }}
+                  disabled={isBusy}
+                  className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs text-red-300 hover:bg-red-950/30 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Remove Asset
+                </button>
+              </div>
+            );
+          })()}
         </div>
       )}
 

@@ -8,6 +8,7 @@ import { deleteAssetHandler } from "./functions/assets/delete.js";
 import { getAssetHandler } from "./functions/assets/get.js";
 import { listAssetsHandler } from "./functions/assets/list.js";
 import { updateAssetCategoryHandler } from "./functions/assets/update-category.js";
+import { updateAssetExtractionHandler } from "./functions/assets/update-extraction.js";
 import { uploadAssetHandler } from "./functions/assets/upload.js";
 import { getAssetViewUrlHandler } from "./functions/assets/view-url.js";
 import { createCategoryHandler } from "./functions/categories/create.js";
@@ -94,6 +95,13 @@ app.http("assets-category-update", {
   methods: ["PATCH"],
   route: "assets/{id}/category",
   handler: updateAssetCategoryHandler
+});
+
+app.http("assets-extraction-update", {
+  authLevel: "anonymous",
+  methods: ["PATCH"],
+  route: "assets/{id}/extraction",
+  handler: updateAssetExtractionHandler
 });
 
 app.http("categories-list", {

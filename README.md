@@ -98,6 +98,8 @@ vault upload <file>  Upload and extract a document
 vault list           List all assets
 vault get <id>       View asset details
 vault search <q>     Search across extracted data
+vault summarize <category>  Copilot summary (4-5 plain-English sentences)
+vault ask "<question>"      Ask Copilot over selected assets/categories
 vault extract <id>   Extract a specific field from an asset
 vault export         Export assets as JSON
 vault categories     Manage categories
@@ -118,9 +120,19 @@ vault upload invoice.pdf --copilot
 
 # Override the extractor command
 vault upload scan.png --copilot-cmd "gh copilot explain"
+
+# Summarize a category for a time window
+vault summarize finance --since 2w
+
+# Ask a question over a category/time range
+vault ask --category finance --since 1w how much did i spend last week
+
+# Ask a question over specific assets
+vault ask --asset <id1> --asset <id2> what does this whiteboard capture
 ```
 
-Copilot extraction produces the same structured output as the server-side AI providers — summary, fields, entities, and category — so the rest of the pipeline (search, export, dashboard) works identically regardless of extraction mode.
+Copilot extraction produces the same structured output as the server-side AI providers — summary, fields, entities, and category — so the rest of the pipeline (search, export, dashboard) works identically regardless of extraction mode.  
+By default, `vault summarize` and `vault ask` print readable plain-English text; use `--json` when you need structured output.
 
 ## Project Scripts
 

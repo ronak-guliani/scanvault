@@ -52,6 +52,7 @@ Given one file, produce **strict JSON only** that the CLI can pass to `/assets/u
   "entities": ["Acme Corp", "John Doe"],
   "categoryName": "Finance",
   "categorySlug": "finance",
+  "assetName": "Acme Invoice INV-1024.pdf",
   "rawText": "optional OCR or extracted text"
 }
 ```
@@ -65,6 +66,7 @@ Given one file, produce **strict JSON only** that the CLI can pass to `/assets/u
 - `fields[].source`: `"ai"` (or `"ocr"` if explicitly OCR-derived).
 - `entities`: unique proper nouns/organizations/products.
 - `categorySlug`: lowercase kebab-case (`[a-z0-9-]`).
+- `assetName`: concise user-facing filename for this asset (keep original extension when possible).
 - If uncertain, still return best effort with lower confidence values.
 
 ## Safety & privacy constraints
@@ -83,4 +85,3 @@ Given one file, produce **strict JSON only** that the CLI can pass to `/assets/u
   "categorySlug": "general"
 }
 ```
-

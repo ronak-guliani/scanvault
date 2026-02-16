@@ -12,6 +12,7 @@ Return strictly JSON with keys:
 - `entities`
 - `categorySlug`
 - `categoryName`
+- `assetName`
 - `rawText`
 
 Rules:
@@ -19,12 +20,13 @@ Rules:
 2. `summary` must be short and factual.
 3. `fields` must contain objects with: `key`, `value`, optional `unit`, optional `confidence` (0-1), optional `source` (`ai` or `ocr`).
 4. Choose `categorySlug/categoryName` from existing categories when possible; otherwise propose a sensible new category.
-5. For receipts/invoices, include line-item details and totals:
+5. Provide `assetName` as a clean user-facing filename (preserve extension).
+6. For receipts/invoices, include line-item details and totals:
    - line item name, quantity, unit price, amount
    - subtotal, tax, total
    - receipt/invoice number, date, store/vendor name, phone (if visible)
-6. Do not hallucinate; omit unknown fields instead of inventing values.
-7. Include `rawText` only when useful OCR text is available.
+7. Do not hallucinate; omit unknown fields instead of inventing values.
+8. Include `rawText` only when useful OCR text is available.
 
 ## Expected JSON shape
 
@@ -45,6 +47,7 @@ Rules:
   "entities": ["East Repair Inc.", "John Smith"],
   "categoryName": "Finance",
   "categorySlug": "finance",
+  "assetName": "East Repair Receipt US-001.jpg",
   "rawText": "optional OCR text"
 }
 ```

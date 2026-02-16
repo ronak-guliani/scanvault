@@ -20,6 +20,7 @@ export const clientExtractionSchema = z.object({
   entities: z.array(z.string().min(1).max(120)).max(50),
   categoryName: z.string().min(1).max(100).optional(),
   categorySlug: z.string().min(1).max(50).optional(),
+  assetName: z.string().min(1).max(255).optional(),
   rawText: z.string().max(20000).optional()
 });
 
@@ -40,6 +41,13 @@ export const updateCategorySchema = z.object({
 
 export const updateAssetCategorySchema = z.object({
   categoryId: z.string().min(1)
+});
+
+export const updateAssetExtractionSchema = z.object({
+  summary: z.string().min(1).max(5000).optional(),
+  fields: z.array(extractedFieldSchema).max(200).optional(),
+  entities: z.array(z.string().min(1).max(120)).max(80).optional(),
+  categoryId: z.string().min(1).optional()
 });
 
 export const updateSettingsSchema = z.object({

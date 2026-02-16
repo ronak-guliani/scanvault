@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import { registerCategoriesCommand } from "./commands/categories.js";
+import { registerAskCommand } from "./commands/ask.js";
 import { registerConfigCommand } from "./commands/config.js";
 import { registerExportCommand } from "./commands/export.js";
 import { registerExtractCommand } from "./commands/extract.js";
@@ -8,6 +9,7 @@ import { registerListCommand } from "./commands/list.js";
 import { registerLoginCommand } from "./commands/login.js";
 import { registerLogoutCommand } from "./commands/logout.js";
 import { registerSearchCommand } from "./commands/search.js";
+import { registerSummarizeCommand } from "./commands/summarize.js";
 import { registerUploadCommand } from "./commands/upload.js";
 import { registerWhoamiCommand } from "./commands/whoami.js";
 import { assertVaultDirPermissions } from "./lib/config.js";
@@ -25,6 +27,8 @@ export async function run(argv: string[]): Promise<void> {
   registerLogoutCommand(program);
   registerWhoamiCommand(program);
   registerUploadCommand(program);
+  registerSummarizeCommand(program);
+  registerAskCommand(program);
   registerListCommand(program);
   registerGetCommand(program);
   registerSearchCommand(program);

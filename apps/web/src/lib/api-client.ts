@@ -143,6 +143,15 @@ export class WebApiClient {
     });
   }
 
+  async updateAssetExtraction(
+    assetId: string,
+    payload: { summary?: string; fields?: Asset["fields"]; entities?: string[]; categoryId?: string }
+  ): Promise<Asset> {
+    return this.requestData<Asset>("PATCH", `/assets/${assetId}/extraction`, {
+      body: payload
+    });
+  }
+
   async listCategories(): Promise<Category[]> {
     return this.requestData<Category[]>("GET", "/categories");
   }

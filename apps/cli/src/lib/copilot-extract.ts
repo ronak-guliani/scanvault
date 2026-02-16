@@ -13,6 +13,45 @@ interface CopilotExtractionInput {
   categories: CategoryChoice[];
 }
 
+function fileExtension(fileName: string): string {
+  const index = fileName.lastIndexOf(".");
+  if (index <= 0) return "";
+  return fileName.slice(index);
+}
+
+function sanitizeAssetName(name: string): string {
+  return name
+    .trim()
+    .replace(/[\\/:*?"<>|]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/\.+$/g, "")
+    .slice(0, 180);
+}
+
+function inferAssetName(fields: ExtractedField[], categoryName: string, fallbackFileName: string): string {
+  const extension = fileExtension(fallbackFileName);
+  const byKey = (key: string): string | undefined => {
+    const match = fields.find((field) => field.key === key);
+    return match ? String(match.value).trim() : undefined;
+  };
+
+  if (categoryName.toLowerCase() === "finance") {
+    const store = byKey("store_name");
+    const receiptNumber = byKey("receipt_number") ?? byKey("invoice_number");
+    const date = byKey("date")?.replace(/[^\d/-]/g, "");
+    const pieces = [store, "Receipt", receiptNumber, date].filter((value): value is string => Boolean(value && value.length > 0));
+    if (pieces.length > 0) {
+      const candidate = sanitizeAssetName(pieces.join(" - "));
+      if (candidate) return `${candidate}${extension}`;
+    }
+  }
+
+  const categoryPrefix = categoryName.trim().length > 0 ? categoryName : "Document";
+  const fallbackBase = fallbackFileName.replace(/\.[^.]+$/, "");
+  const candidate = sanitizeAssetName(`${categoryPrefix} - ${fallbackBase}`);
+  return `${candidate || fallbackBase}${extension}`;
+}
+
 function normalizeCategorySlug(input: string): string {
   return input
     .toLowerCase()
@@ -28,25 +67,45 @@ function splitCommand(commandLine: string): string[] {
   );
 }
 
-function inferCategorySlug(fileName: string, categories: CategoryChoice[]): string {
-  const normalized = fileName.toLowerCase();
+function inferCategorySlug(fileName: string, categories: CategoryChoice[], signalText?: string): string {
+  const signal = `${fileName}\n${signalText ?? ""}`.toLowerCase();
+  const scoreBySlug = new Map<string, number>();
+  const addScore = (slug: string, points: number): void => {
+    if (!categories.some((category) => category.slug === slug)) return;
+    scoreBySlug.set(slug, (scoreBySlug.get(slug) ?? 0) + points);
+  };
+
   const rules: Array<{ slug: string; keywords: string[] }> = [
-    { slug: "finance", keywords: ["invoice", "receipt", "bill", "expense", "tax"] },
-    { slug: "travel", keywords: ["flight", "hotel", "boarding", "itinerary", "trip"] },
-    { slug: "health", keywords: ["health", "lab", "medical", "prescription", "clinic"] },
-    { slug: "fitness", keywords: ["fitness", "workout", "calorie", "weight", "protein"] },
-    { slug: "work", keywords: ["contract", "timesheet", "salary", "proposal", "payroll"] }
+    { slug: "finance", keywords: ["invoice", "receipt", "bill", "expense", "tax", "total", "subtotal", "payment"] },
+    { slug: "travel", keywords: ["flight", "hotel", "boarding", "itinerary", "trip", "reservation"] },
+    { slug: "health", keywords: ["health", "lab", "medical", "prescription", "clinic", "doctor"] },
+    { slug: "fitness", keywords: ["fitness", "workout", "calorie", "weight", "protein", "exercise"] },
+    { slug: "work", keywords: ["contract", "timesheet", "salary", "proposal", "payroll", "meeting"] },
+    { slug: "school", keywords: ["class", "homework", "lecture", "exam", "whiteboard", "syllabus", "school"] }
   ];
 
   for (const rule of rules) {
-    if (!rule.keywords.some((keyword) => normalized.includes(keyword))) continue;
-    const matched = categories.find((category) => category.slug === rule.slug);
-    if (matched) return matched.slug;
+    const matches = rule.keywords.filter((keyword) => signal.includes(keyword)).length;
+    if (matches > 0) addScore(rule.slug, matches * 2);
   }
 
-  const general = categories.find((category) => category.slug === "general");
-  if (general) return general.slug;
-  return categories[0]?.slug ?? "general";
+  for (const category of categories) {
+    const nameTokens = category.name.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const slugTokens = category.slug.split("-").filter(Boolean);
+    const tokenMatches = [...nameTokens, ...slugTokens].filter((token) => token.length > 2 && signal.includes(token)).length;
+    if (tokenMatches > 0) addScore(category.slug, tokenMatches);
+  }
+
+  let winner = categories.find((category) => category.slug === "general")?.slug ?? categories[0]?.slug ?? "general";
+  let winnerScore = -1;
+  for (const category of categories) {
+    const score = scoreBySlug.get(category.slug) ?? 0;
+    if (score > winnerScore) {
+      winner = category.slug;
+      winnerScore = score;
+    }
+  }
+  return winner;
 }
 
 function normalizeFields(value: unknown): ExtractedField[] {
@@ -95,7 +154,11 @@ function normalizeCopilotOutput(
   }
 
   const parsed = output as Record<string, unknown>;
-  const fallbackCategorySlug = inferCategorySlug(fallbackFileName, categories);
+  const fallbackCategorySlug = inferCategorySlug(
+    fallbackFileName,
+    categories,
+    `${typeof parsed.summary === "string" ? parsed.summary : ""}\n${typeof parsed.rawText === "string" ? parsed.rawText : ""}`
+  );
   const fallbackCategoryName =
     categories.find((category) => category.slug === fallbackCategorySlug)?.name ?? "General";
 
@@ -112,13 +175,19 @@ function normalizeCopilotOutput(
     typeof parsed.categoryName === "string" && parsed.categoryName.trim().length > 0
       ? parsed.categoryName.trim().slice(0, 100)
       : fallbackCategoryName;
+  const normalizedFields = normalizeFields(parsed.fields);
+  const assetNameRaw =
+    typeof parsed.assetName === "string" && parsed.assetName.trim().length > 0
+      ? sanitizeAssetName(parsed.assetName)
+      : inferAssetName(normalizedFields, categoryName, fallbackFileName);
 
   return {
     summary,
-    fields: normalizeFields(parsed.fields),
+    fields: normalizedFields,
     entities: normalizeEntities(parsed.entities),
     categorySlug,
     categoryName,
+    assetName: assetNameRaw || fallbackFileName,
     rawText:
       typeof parsed.rawText === "string" && parsed.rawText.trim().length > 0
         ? parsed.rawText.slice(0, 20000)
@@ -164,7 +233,7 @@ async function runGitHubModelsExtractor(input: CopilotExtractionInput): Promise<
   const categories = input.categories.map((category) => `${category.slug} (${category.name})`).join(", ");
   const prompt = [
     "Extract structured data from this document image.",
-    "Return strictly JSON keys: summary, fields, entities, categorySlug, categoryName, rawText.",
+    "Return strictly JSON keys: summary, fields, entities, categorySlug, categoryName, assetName, rawText.",
     "For receipts include each line item and price, total, tax, date, phone, and store name where visible.",
     `Prefer one of these categories when relevant: ${categories}.`
   ].join(" ");
@@ -266,10 +335,7 @@ function createFallbackExtraction(
   ocrText?: string
 ): ClientExtractionResult {
   const searchableText = `${fileName}\n${ocrText ?? ""}`.toLowerCase();
-  const categorySlug =
-    searchableText.includes("receipt") || searchableText.includes("total")
-      ? categories.find((category) => category.slug === "finance")?.slug ?? inferCategorySlug(fileName, categories)
-      : inferCategorySlug(fileName, categories);
+  const categorySlug = inferCategorySlug(fileName, categories, searchableText);
   const categoryName = categories.find((category) => category.slug === categorySlug)?.name ?? "General";
 
   const fields: ExtractedField[] = [
@@ -318,6 +384,7 @@ function createFallbackExtraction(
     entities: storeLine ? [storeLine] : [],
     categorySlug,
     categoryName,
+    assetName: inferAssetName(fields, categoryName, fileName),
     rawText: ocrText && ocrText.trim().length > 0 ? ocrText.slice(0, 20000) : undefined
   };
 }
@@ -359,6 +426,7 @@ function mergeExtractions(primary: ClientExtractionResult, fallback: ClientExtra
         : primary.categorySlug === "general" && fallback.categoryName
           ? fallback.categoryName
           : primary.categoryName,
+    assetName: primary.assetName ?? fallback.assetName,
     rawText: primary.rawText ?? fallback.rawText
   };
 }
