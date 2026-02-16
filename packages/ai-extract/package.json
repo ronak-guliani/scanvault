@@ -1,0 +1,21 @@
+{
+  "name": "@scanvault/ai-extract",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "npm run -w @scanvault/shared build && tsc -p tsconfig.json",
+    "typecheck": "npm run -w @scanvault/shared build && tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test \"tests/*.test.mjs\""
+  },
+  "dependencies": {
+    "@scanvault/shared": "0.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
+    "COSMOS_CONNECTION_STRING": "",
+    "STORAGE_CONNECTION_STRING": "",
+    "B2C_JWKS_URI": "",
+    "B2C_ISSUER": "",
+    "B2C_AUDIENCE": "",
+    "B2C_AUTHORIZATION_ENDPOINT": "",
+    "B2C_TOKEN_ENDPOINT": "",
+    "B2C_CLIENT_ID": "",
+    "B2C_CLIENT_SECRET": "",
+    "B2C_SCOPE": "openid offline_access",
+    "KEYVAULT_URL": "",
+    "SEARCH_ENDPOINT": "",
+    "SEARCH_API_KEY": "",
+    "SEARCH_INDEX_NAME": "assets-index"
+  }
+}

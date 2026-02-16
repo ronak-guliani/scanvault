@@ -1,0 +1,20 @@
+import { decodeJwtPayload, getAccessToken } from "../lib/auth.js";
+import { withErrorHandling } from "../lib/command.js";
+import { printOutput } from "../lib/output.js";
+export function registerWhoamiCommand(program) {
+    program
+        .command("whoami")
+        .description("Show current authenticated user")
+        .option("--json", "Output JSON")
+        .action(withErrorHandling(async (options) => {
+        const token = await getAccessToken();
+        const payload = decodeJwtPayload(token);
+        printOutput({
+            sub: payload.sub,
+            email: payload.email,
+            name: payload.name,
+            exp: payload.exp
+        }, { json: options.json });
+    }));
+}
+//# sourceMappingURL=whoami.js.map

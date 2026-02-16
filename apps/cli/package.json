@@ -1,0 +1,24 @@
+{
+  "name": "@scanvault/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "bin": {
+    "vault": "dist/bin/vault.js"
+  },
+  "scripts": {
+    "build": "npm run -w @scanvault/shared build && tsc -p tsconfig.json",
+    "typecheck": "npm run -w @scanvault/shared build && tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test \"tests/*.test.mjs\""
+  },
+  "dependencies": {
+    "@scanvault/shared": "0.1.0",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.1",
+    "typescript": "^5.7.3"
+  }
+}

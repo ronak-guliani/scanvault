@@ -1,0 +1,33 @@
+{
+  "name": "@scanvault/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "func start",
+    "test": "npm run -w @scanvault/shared build && npm run -w @scanvault/ai-extract build && npm run build && node --test \"tests/*.test.mjs\""
+  },
+  "dependencies": {
+    "@azure/cosmos": "^4.1.0",
+    "@azure/functions": "^4.6.0",
+    "@azure/identity": "^4.9.0",
+    "@azure/storage-blob": "^12.25.0",
+    "@azure/storage-queue": "^12.24.0",
+    "@scanvault/shared": "0.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "jwks-rsa": "^3.2.0",
+    "zod": "^3.24.1",
+    "@scanvault/ai-extract": "0.1.0",
+    "@azure/keyvault-secrets": "^4.9.0",
+    "@azure/search-documents": "^12.1.0",
+    "tesseract.js": "^5.1.1"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.9",
+    "@types/node": "^22.13.1",
+    "typescript": "^5.7.3"
+  }
+}

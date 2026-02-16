@@ -1,0 +1,14 @@
+{
+  "name": "scanvault",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run -w @scanvault/shared build && npm run -w @scanvault/ai-extract build && npm run -w @scanvault/api build && npm run -w @scanvault/cli build && npm run -w @scanvault/web build",
+    "typecheck": "npm run -w @scanvault/shared build && npm run -w @scanvault/shared typecheck && npm run -w @scanvault/ai-extract build && npm run -w @scanvault/ai-extract typecheck && npm run -w @scanvault/api typecheck && npm run -w @scanvault/cli typecheck && npm run -w @scanvault/web typecheck",
+    "lint": "npm run --workspaces lint --if-present",
+    "test": "npm run --workspaces test --if-present"
+  }
+}
