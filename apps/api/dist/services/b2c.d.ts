@@ -11,4 +11,5 @@ export declare function buildAuthorizationUrl(options: {
 }): string;
 export declare function exchangeAuthorizationCode(code: string, redirectUri: string, codeVerifier?: string): Promise<TokenResponse>;
 export declare function refreshAccessToken(refreshToken: string): Promise<TokenResponse>;
+export declare function mintApiTokenFromOAuthToken(accessToken: string): string;
 export {};

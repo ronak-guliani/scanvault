@@ -3,11 +3,12 @@ import { HttpError } from "../../http/errors.js";
 import { errorResponse, success } from "../../http/response.js";
 import { requireAuth } from "../../middleware/auth.js";
 import {
+  deleteAsset,
   deleteCategory,
-  ensureDefaultCategories,
   getCategoryById,
-  reassignAssetCategory
+  listAssetsByCategory
 } from "../../services/cosmos.js";
+import { deleteBlobByPath } from "../../services/blob.js";
 
 export async function deleteCategoryHandler(request: HttpRequest, context: InvocationContext): Promise<HttpResponseInit> {
   try {
@@ -22,20 +23,22 @@ export async function deleteCategoryHandler(request: HttpRequest, context: Invoc
       throw new HttpError(404, "NOT_FOUND", "Category not found");
     }
 
-    const categories = await ensureDefaultCategories(auth.userId);
-    const generalCategory = categories.find((category) => category.slug === "general");
-    if (!generalCategory) {
-      throw new HttpError(500, "INTERNAL_ERROR", "General category is missing");
-    }
-
-    if (generalCategory.id === categoryId) {
+    if (target.slug === "general") {
       throw new HttpError(400, "VALIDATION_ERROR", "General category cannot be deleted");
     }
 
-    await reassignAssetCategory(auth.userId, categoryId, generalCategory.id);
+    const categoryAssets = await listAssetsByCategory(auth.userId, categoryId);
+    for (const asset of categoryAssets) {
+      await deleteBlobByPath(asset.originalBlobUrl);
+      for (const normalizedBlobUrl of asset.normalizedBlobUrls) {
+        await deleteBlobByPath(normalizedBlobUrl);
+      }
+      await deleteAsset(auth.userId, asset.id);
+    }
+
     await deleteCategory(auth.userId, categoryId);
 
-    return success({ deleted: true });
+    return success({ deleted: true, deletedAssets: categoryAssets.length });
   } catch (error) {
     return errorResponse(error, context);
   }

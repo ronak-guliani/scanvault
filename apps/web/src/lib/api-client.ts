@@ -125,8 +125,22 @@ export class WebApiClient {
     return this.requestData<Asset>("GET", `/assets/${id}`);
   }
 
+  async getAssetViewUrl(id: string): Promise<string> {
+    const response = await this.requestData<{ viewUrl: string }>("GET", `/assets/${id}/view-url`);
+    if (!response.viewUrl) {
+      throw new Error("View URL unavailable");
+    }
+    return response.viewUrl;
+  }
+
   async deleteAsset(id: string): Promise<void> {
     await this.requestEnvelope("DELETE", `/assets/${id}`);
+  }
+
+  async moveAssetToCategory(assetId: string, categoryId: string): Promise<Asset> {
+    return this.requestData<Asset>("PATCH", `/assets/${assetId}/category`, {
+      body: { categoryId }
+    });
   }
 
   async listCategories(): Promise<Category[]> {

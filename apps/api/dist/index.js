@@ -8,6 +8,7 @@ import { deleteAssetHandler } from "./functions/assets/delete.js";
 import { getAssetHandler } from "./functions/assets/get.js";
 import { listAssetsHandler } from "./functions/assets/list.js";
 import { uploadAssetHandler } from "./functions/assets/upload.js";
+import { getAssetViewUrlHandler } from "./functions/assets/view-url.js";
 import { createCategoryHandler } from "./functions/categories/create.js";
 import { deleteCategoryHandler } from "./functions/categories/delete.js";
 import { listCategoriesHandler } from "./functions/categories/list.js";
@@ -57,6 +58,12 @@ app.http("assets-get", {
     methods: ["GET"],
     route: "assets/{id}",
     handler: getAssetHandler
+});
+app.http("assets-view-url", {
+    authLevel: "anonymous",
+    methods: ["GET"],
+    route: "assets/{id}/view-url",
+    handler: getAssetViewUrlHandler
 });
 app.http("assets-list", {
     authLevel: "anonymous",

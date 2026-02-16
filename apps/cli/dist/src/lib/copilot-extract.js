@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
+import { readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
-import { stat } from "node:fs/promises";
 function normalizeCategorySlug(input) {
     return input
         .toLowerCase()
@@ -22,37 +22,30 @@ function inferCategorySlug(fileName, categories) {
         { slug: "work", keywords: ["contract", "timesheet", "salary", "proposal", "payroll"] }
     ];
     for (const rule of rules) {
-        if (!rule.keywords.some((keyword) => normalized.includes(keyword))) {
+        if (!rule.keywords.some((keyword) => normalized.includes(keyword)))
             continue;
-        }
         const matched = categories.find((category) => category.slug === rule.slug);
-        if (matched) {
+        if (matched)
             return matched.slug;
-        }
     }
     const general = categories.find((category) => category.slug === "general");
-    if (general) {
+    if (general)
         return general.slug;
-    }
     return categories[0]?.slug ?? "general";
 }
 function normalizeFields(value) {
-    if (!Array.isArray(value)) {
+    if (!Array.isArray(value))
         return [];
-    }
     const normalized = [];
     for (const item of value) {
-        if (typeof item !== "object" || item === null) {
+        if (typeof item !== "object" || item === null)
             continue;
-        }
         const field = item;
-        if (typeof field.key !== "string" || field.key.trim().length === 0) {
+        if (typeof field.key !== "string" || field.key.trim().length === 0)
             continue;
-        }
         const rawValue = field.value;
-        if (typeof rawValue !== "string" && typeof rawValue !== "number") {
+        if (typeof rawValue !== "string" && typeof rawValue !== "number")
             continue;
-        }
         normalized.push({
             key: field.key.trim().slice(0, 100),
             value: typeof rawValue === "string" ? rawValue.slice(0, 2000) : rawValue,
@@ -63,12 +56,11 @@ function normalizeFields(value) {
             source: field.source === "ocr" ? "ocr" : "ai"
         });
     }
-    return normalized.slice(0, 100);
+    return normalized.slice(0, 150);
 }
 function normalizeEntities(value) {
-    if (!Array.isArray(value)) {
+    if (!Array.isArray(value))
         return [];
-    }
     return [...new Set(value.filter((item) => typeof item === "string").map((item) => item.trim()))]
         .filter(Boolean)
         .map((item) => item.slice(0, 120))
@@ -101,37 +93,226 @@ function normalizeCopilotOutput(output, categories, fallbackFileName, fallbackFi
             : undefined
     };
 }
-function createFallbackExtraction(fileName, fileSizeBytes, categories) {
-    const categorySlug = inferCategorySlug(fileName, categories);
-    const categoryName = categories.find((category) => category.slug === categorySlug)?.name ?? "General";
-    return {
-        summary: `Uploaded ${fileName} (${fileSizeBytes} bytes). Category inferred as ${categoryName}.`,
-        fields: [
-            {
-                key: "file_name",
-                value: fileName,
-                confidence: 0.65,
-                source: "ai"
-            },
-            {
-                key: "file_size_bytes",
-                value: fileSizeBytes,
-                confidence: 0.95,
-                source: "ai"
+async function runLocalTesseract(filePath) {
+    const child = spawn("tesseract", [filePath, "stdout"], { stdio: ["ignore", "pipe", "ignore"], shell: false });
+    const chunks = [];
+    child.stdout.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    const exitCode = await new Promise((resolve) => {
+        child.on("error", () => resolve(127));
+        child.on("exit", (code) => resolve(code ?? 1));
+    });
+    if (exitCode !== 0)
+        return null;
+    const text = Buffer.concat(chunks).toString("utf8").trim();
+    return text.length > 0 ? text : null;
+}
+async function getGitHubToken() {
+    if (process.env.GITHUB_TOKEN && process.env.GITHUB_TOKEN.trim().length > 0) {
+        return process.env.GITHUB_TOKEN.trim();
+    }
+    const child = spawn("gh", ["auth", "token"], { stdio: ["ignore", "pipe", "ignore"], shell: false });
+    const chunks = [];
+    child.stdout.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    const exitCode = await new Promise((resolve) => {
+        child.on("error", () => resolve(127));
+        child.on("exit", (code) => resolve(code ?? 1));
+    });
+    if (exitCode !== 0)
+        return null;
+    const token = Buffer.concat(chunks).toString("utf8").trim();
+    return token.length > 0 ? token : null;
+}
+async function runGitHubModelsExtractor(input) {
+    if (!input.mimeType.startsWith("image/"))
+        return null;
+    const token = await getGitHubToken();
+    if (!token)
+        return null;
+    const imageBase64 = (await readFile(input.filePath)).toString("base64");
+    const categories = input.categories.map((category) => `${category.slug} (${category.name})`).join(", ");
+    const prompt = [
+        "Extract structured data from this document image.",
+        "Return strictly JSON keys: summary, fields, entities, categorySlug, categoryName, rawText.",
+        "For receipts include each line item and price, total, tax, date, phone, and store name where visible.",
+        `Prefer one of these categories when relevant: ${categories}.`
+    ].join(" ");
+    const response = await fetch("https://models.inference.ai.azure.com/chat/completions", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+            model: "gpt-4o-mini",
+            temperature: 0,
+            response_format: { type: "json_object" },
+            messages: [
+                {
+                    role: "user",
+                    content: [
+                        { type: "text", text: prompt },
+                        { type: "image_url", image_url: { url: `data:${input.mimeType};base64,${imageBase64}` } }
+                    ]
+                }
+            ]
+        })
+    });
+    if (!response.ok)
+        return null;
+    const json = (await response.json().catch(() => ({})));
+    const content = json.choices?.[0]?.message?.content;
+    if (!content)
+        return null;
+    try {
+        return normalizeCopilotOutput(JSON.parse(content), input.categories, input.fileName, input.fileSizeBytes);
+    }
+    catch {
+        return null;
+    }
+}
+function parseReceiptLineItems(ocrText) {
+    const fields = [];
+    const lines = ocrText
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+    const lineItemRegex = /^([A-Za-z][A-Za-z0-9&().,'\-\/\s]{1,}?)\s+(?:(\d+)\s*x\s*)?([$€]?\s?\d+\.\d{2})$/i;
+    const tableLineRegex = /^(\d+)\s+(.+?)\s+([$€]?\s?\d+(?:[.,]\d{2})?)\s+([$€]?\s?\d+(?:[.,]\d{2})?)$/i;
+    let itemIndex = 1;
+    for (const line of lines) {
+        const tableMatch = line.match(tableLineRegex);
+        if (tableMatch) {
+            const quantity = Number(tableMatch[1]);
+            const name = tableMatch[2].trim();
+            const unitPrice = Number(tableMatch[3].replace(/[$€\s]/g, "").replace(",", "."));
+            const amount = Number(tableMatch[4].replace(/[$€\s]/g, "").replace(",", "."));
+            if (Number.isFinite(quantity) &&
+                quantity > 0 &&
+                Number.isFinite(unitPrice) &&
+                unitPrice >= 0 &&
+                Number.isFinite(amount) &&
+                amount > 0) {
+                fields.push({ key: `line_item_${itemIndex}_name`, value: name, confidence: 0.83, source: "ocr" });
+                fields.push({ key: `line_item_${itemIndex}_qty`, value: quantity, confidence: 0.83, source: "ocr" });
+                fields.push({ key: `line_item_${itemIndex}_unit_price`, value: unitPrice, confidence: 0.8, source: "ocr" });
+                fields.push({ key: `line_item_${itemIndex}_price`, value: amount, confidence: 0.83, source: "ocr" });
+                itemIndex += 1;
+                continue;
             }
-        ],
-        entities: [],
+        }
+        const match = line.match(lineItemRegex);
+        if (!match)
+            continue;
+        const name = match[1].trim();
+        const quantity = match[2] ? Number(match[2]) : undefined;
+        const amount = Number(match[3].replace(/[$€\s]/g, "").replace(",", "."));
+        if (!Number.isFinite(amount) || amount <= 0)
+            continue;
+        if (/^(total|receipt total|tax|subtotal|cash receipt|thank you|credit card|network id|manager)\b/i.test(name))
+            continue;
+        fields.push({ key: `line_item_${itemIndex}_name`, value: name, confidence: 0.8, source: "ocr" });
+        fields.push({ key: `line_item_${itemIndex}_price`, value: amount, confidence: 0.8, source: "ocr" });
+        if (Number.isFinite(quantity) && quantity && quantity > 1) {
+            fields.push({ key: `line_item_${itemIndex}_qty`, value: quantity, confidence: 0.72, source: "ocr" });
+        }
+        itemIndex += 1;
+    }
+    return fields;
+}
+function createFallbackExtraction(fileName, fileSizeBytes, categories, ocrText) {
+    const searchableText = `${fileName}\n${ocrText ?? ""}`.toLowerCase();
+    const categorySlug = searchableText.includes("receipt") || searchableText.includes("total")
+        ? categories.find((category) => category.slug === "finance")?.slug ?? inferCategorySlug(fileName, categories)
+        : inferCategorySlug(fileName, categories);
+    const categoryName = categories.find((category) => category.slug === categorySlug)?.name ?? "General";
+    const fields = [
+        { key: "file_name", value: fileName, confidence: 0.65, source: "ai" },
+        { key: "file_size_bytes", value: fileSizeBytes, confidence: 0.95, source: "ai" }
+    ];
+    const storeLine = (ocrText ?? "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .find((line) => /[A-Za-z]{3,}/.test(line) && !/receipt|total|tax|thank you|credit card/i.test(line));
+    if (storeLine) {
+        fields.push({ key: "store_name", value: storeLine, confidence: 0.7, source: "ocr" });
+    }
+    const totalMatch = (ocrText ?? "").match(/total[:\s]*([$€]?\s?\d+(?:\.\d{2})?)/i);
+    if (totalMatch) {
+        fields.push({ key: "total_amount", value: totalMatch[1].replace(/\s+/g, ""), confidence: 0.8, source: "ocr" });
+    }
+    const taxMatch = (ocrText ?? "").match(/tax[:\s]*([$€]?\s?\d+(?:\.\d{2})?)/i);
+    if (taxMatch) {
+        fields.push({ key: "tax_amount", value: taxMatch[1].replace(/\s+/g, ""), confidence: 0.78, source: "ocr" });
+    }
+    const dateMatch = (ocrText ?? "").match(/\b(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})\b/);
+    if (dateMatch) {
+        fields.push({ key: "date", value: dateMatch[1], confidence: 0.75, source: "ocr" });
+    }
+    const phoneMatch = (ocrText ?? "").match(/\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}/);
+    if (phoneMatch) {
+        fields.push({ key: "phone", value: phoneMatch[0], confidence: 0.75, source: "ocr" });
+    }
+    const receiptNumberMatch = (ocrText ?? "").match(/(?:receipt\s*#|invoice\s*#|order\s*#|po\s*#)\s*([A-Z0-9/-]{3,})/i);
+    if (receiptNumberMatch) {
+        fields.push({ key: "receipt_number", value: receiptNumberMatch[1], confidence: 0.72, source: "ocr" });
+    }
+    if (ocrText) {
+        fields.push(...parseReceiptLineItems(ocrText));
+    }
+    return {
+        summary: ocrText && ocrText.trim().length > 0
+            ? `Uploaded ${fileName}. OCR-assisted extraction inferred ${categoryName} category.`
+            : `Uploaded ${fileName} (${fileSizeBytes} bytes). Category inferred as ${categoryName}.`,
+        fields,
+        entities: storeLine ? [storeLine] : [],
         categorySlug,
-        categoryName
+        categoryName,
+        rawText: ocrText && ocrText.trim().length > 0 ? ocrText.slice(0, 20000) : undefined
+    };
+}
+function isReceiptLike(extraction, fileName) {
+    const signal = `${fileName} ${extraction.categorySlug ?? ""} ${extraction.categoryName ?? ""} ${extraction.rawText ?? ""}`.toLowerCase();
+    return /receipt|invoice|subtotal|sales tax|total|payment instruction|bill to|ship to/.test(signal);
+}
+function shouldAugmentFromOcr(extraction, fileName) {
+    if (!isReceiptLike(extraction, fileName))
+        return false;
+    const lineItemCount = extraction.fields.filter((field) => field.key.startsWith("line_item_")).length;
+    return extraction.fields.length < 10 || lineItemCount < 4;
+}
+function mergeExtractions(primary, fallback) {
+    const mergedFields = [];
+    const seen = new Set();
+    for (const field of [...primary.fields, ...fallback.fields]) {
+        const signature = `${field.key.toLowerCase()}::${String(field.value).toLowerCase()}`;
+        if (seen.has(signature))
+            continue;
+        seen.add(signature);
+        mergedFields.push(field);
+    }
+    return {
+        summary: primary.summary,
+        fields: mergedFields.slice(0, 200),
+        entities: [...new Set([...primary.entities, ...fallback.entities])].slice(0, 60),
+        categorySlug: fallback.categorySlug === "finance" && primary.categorySlug !== "finance"
+            ? "finance"
+            : primary.categorySlug === "general" && fallback.categorySlug
+                ? fallback.categorySlug
+                : primary.categorySlug,
+        categoryName: fallback.categorySlug === "finance" && primary.categorySlug !== "finance"
+            ? fallback.categoryName
+            : primary.categorySlug === "general" && fallback.categoryName
+                ? fallback.categoryName
+                : primary.categoryName,
+        rawText: primary.rawText ?? fallback.rawText
     };
 }
 async function runCopilotExtractor(commandLine, input) {
     const parts = splitCommand(commandLine);
     const command = parts[0];
     const args = parts.slice(1);
-    if (!command) {
+    if (!command)
         throw new Error("copilot-extractor-cmd is empty");
-    }
     const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"], shell: false });
     const outputChunks = [];
     const errorChunks = [];
@@ -155,9 +336,8 @@ async function runCopilotExtractor(commandLine, input) {
         throw new Error(stderr ? `Copilot extractor failed: ${stderr}` : `Copilot extractor exited with code ${exitCode}`);
     }
     const stdout = Buffer.concat(outputChunks).toString("utf8").trim();
-    if (!stdout) {
+    if (!stdout)
         throw new Error("Copilot extractor returned empty output");
-    }
     let parsed;
     try {
         parsed = JSON.parse(stdout);
@@ -175,14 +355,31 @@ export async function extractWithCopilot(filePath, mimeType, categories, command
         fileName,
         mimeType,
         fileSizeBytes: metadata.size,
-        categories: categories.map((category) => ({
-            name: category.name,
-            slug: category.slug
-        }))
+        categories: categories.map((category) => ({ name: category.name, slug: category.slug }))
     };
     if (!commandLine) {
-        return createFallbackExtraction(fileName, metadata.size, categories);
+        const aiResult = await runGitHubModelsExtractor(input);
+        if (aiResult) {
+            if (mimeType.startsWith("image/") && shouldAugmentFromOcr(aiResult, fileName)) {
+                const ocrText = await runLocalTesseract(filePath);
+                if (ocrText) {
+                    const fallback = createFallbackExtraction(fileName, metadata.size, categories, ocrText);
+                    return mergeExtractions(aiResult, fallback);
+                }
+            }
+            return aiResult;
+        }
+        const ocrText = mimeType.startsWith("image/") ? await runLocalTesseract(filePath) : null;
+        return createFallbackExtraction(fileName, metadata.size, categories, ocrText ?? undefined);
     }
-    return runCopilotExtractor(commandLine, input);
+    const copilotResult = await runCopilotExtractor(commandLine, input);
+    if (mimeType.startsWith("image/") && shouldAugmentFromOcr(copilotResult, fileName)) {
+        const ocrText = await runLocalTesseract(filePath);
+        if (ocrText) {
+            const fallback = createFallbackExtraction(fileName, metadata.size, categories, ocrText);
+            return mergeExtractions(copilotResult, fallback);
+        }
+    }
+    return copilotResult;
 }
 //# sourceMappingURL=copilot-extract.js.map

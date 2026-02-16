@@ -7,7 +7,9 @@ import { confirmUploadHandler } from "./functions/assets/confirm.js";
 import { deleteAssetHandler } from "./functions/assets/delete.js";
 import { getAssetHandler } from "./functions/assets/get.js";
 import { listAssetsHandler } from "./functions/assets/list.js";
+import { updateAssetCategoryHandler } from "./functions/assets/update-category.js";
 import { uploadAssetHandler } from "./functions/assets/upload.js";
+import { getAssetViewUrlHandler } from "./functions/assets/view-url.js";
 import { createCategoryHandler } from "./functions/categories/create.js";
 import { deleteCategoryHandler } from "./functions/categories/delete.js";
 import { listCategoriesHandler } from "./functions/categories/list.js";
@@ -66,6 +68,13 @@ app.http("assets-get", {
   handler: getAssetHandler
 });
 
+app.http("assets-view-url", {
+  authLevel: "anonymous",
+  methods: ["GET"],
+  route: "assets/{id}/view-url",
+  handler: getAssetViewUrlHandler
+});
+
 app.http("assets-list", {
   authLevel: "anonymous",
   methods: ["GET"],
@@ -78,6 +87,13 @@ app.http("assets-delete", {
   methods: ["DELETE"],
   route: "assets/{id}",
   handler: deleteAssetHandler
+});
+
+app.http("assets-category-update", {
+  authLevel: "anonymous",
+  methods: ["PATCH"],
+  route: "assets/{id}/category",
+  handler: updateAssetCategoryHandler
 });
 
 app.http("categories-list", {

@@ -31,6 +31,9 @@ export const updateCategorySchema = z.object({
     name: z.string().min(1).max(100).optional(),
     fieldPriorities: z.array(z.string().min(1)).optional()
 });
+export const updateAssetCategorySchema = z.object({
+    categoryId: z.string().min(1)
+});
 export const updateSettingsSchema = z.object({
     extractionMode: z.enum(["ai", "ocr"]).optional(),
     aiProvider: z.enum(["openai", "anthropic", "google"]).optional(),

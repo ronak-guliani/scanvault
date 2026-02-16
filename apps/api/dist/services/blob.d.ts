@@ -5,3 +5,4 @@ export declare function createUploadSas(userId: string, assetId: string, fileNam
 }>;
 export declare function deleteBlobByPath(blobPath: string): Promise<void>;
 export declare function readBlobByPath(blobPath: string): Promise<Buffer>;
+export declare function createReadSasForBlobPath(blobPath: string): Promise<string>;

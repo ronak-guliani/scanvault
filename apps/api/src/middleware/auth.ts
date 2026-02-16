@@ -89,11 +89,14 @@ export async function requireAuth(request: HttpRequest): Promise<AuthContext> {
     throw new HttpError(401, "AUTH_REQUIRED", "Token missing sub claim");
   }
 
-  await enforceRateLimit(payload.sub, "api");
+  const email = typeof payload.email === "string" ? payload.email.trim().toLowerCase() : undefined;
+  const canonicalUserId = email && email.length > 0 ? email : payload.sub;
+
+  await enforceRateLimit(canonicalUserId, "api");
 
   return {
-    userId: payload.sub,
-    email: typeof payload.email === "string" ? payload.email : undefined,
+    userId: canonicalUserId,
+    email,
     name: typeof payload.name === "string" ? payload.name : undefined
   };
 }

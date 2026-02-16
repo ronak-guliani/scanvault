@@ -1,4 +1,5 @@
 import { getRequiredEnv } from "../config/index.js";
+import jwt from "jsonwebtoken";
 function getOAuthConfig() {
     return {
         authorizationEndpoint: getRequiredEnv("B2C_AUTHORIZATION_ENDPOINT"),
@@ -59,5 +60,43 @@ export async function refreshAccessToken(refreshToken) {
         refresh_token: refreshToken
     });
     return exchangeToken(form);
+}
+function readStringClaim(payload, keys) {
+    for (const key of keys) {
+        const value = payload[key];
+        if (typeof value === "string" && value.trim().length > 0) {
+            return value;
+        }
+    }
+    return undefined;
+}
+function extractIdentityFromOAuthToken(accessToken) {
+    const decoded = jwt.decode(accessToken);
+    if (!decoded || typeof decoded === "string") {
+        throw new Error("OAuth token payload is invalid");
+    }
+    const payload = decoded;
+    const sub = readStringClaim(payload, ["sub", "oid", "objectId", "uid"]) ??
+        undefined;
+    if (!sub) {
+        throw new Error("OAuth token missing subject");
+    }
+    return {
+        sub,
+        email: readStringClaim(payload, ["email", "preferred_username", "upn"]),
+        name: readStringClaim(payload, ["name", "given_name"])
+    };
+}
+export function mintApiTokenFromOAuthToken(accessToken) {
+    const secret = getRequiredEnv("API_JWT_SECRET");
+    const identity = extractIdentityFromOAuthToken(accessToken);
+    return jwt.sign({
+        sub: identity.sub,
+        email: identity.email,
+        name: identity.name
+    }, secret, {
+        algorithm: "HS256",
+        expiresIn: "1h"
+    });
 }
 //# sourceMappingURL=b2c.js.map

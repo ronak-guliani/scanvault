@@ -168,6 +168,20 @@ export async function deleteAsset(userId: string, id: string): Promise<void> {
   await assetsContainer().item(id, userId).delete();
 }
 
+export async function listAssetsByCategory(userId: string, categoryId: string): Promise<Asset[]> {
+  const { resources } = await assetsContainer()
+    .items.query<Asset>({
+      query: "SELECT * FROM c WHERE c.userId = @userId AND c.categoryId = @categoryId",
+      parameters: [
+        { name: "@userId", value: userId },
+        { name: "@categoryId", value: categoryId }
+      ]
+    })
+    .fetchAll();
+
+  return resources;
+}
+
 export async function listCategories(userId: string): Promise<Category[]> {
   const { resources } = await categoriesContainer()
     .items.query<Category>({

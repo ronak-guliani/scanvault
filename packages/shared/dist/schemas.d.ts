@@ -171,6 +171,13 @@ export declare const updateCategorySchema: z.ZodObject<{
     name?: string | undefined;
     fieldPriorities?: string[] | undefined;
 }>;
+export declare const updateAssetCategorySchema: z.ZodObject<{
+    categoryId: z.ZodString;
+}, "strip", z.ZodTypeAny, {
+    categoryId: string;
+}, {
+    categoryId: string;
+}>;
 export declare const updateSettingsSchema: z.ZodObject<{
     extractionMode: z.ZodOptional<z.ZodEnum<["ai", "ocr"]>>;
     aiProvider: z.ZodOptional<z.ZodEnum<["openai", "anthropic", "google"]>>;

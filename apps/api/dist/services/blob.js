@@ -90,4 +90,22 @@ export async function readBlobByPath(blobPath) {
     }
     return Buffer.concat(chunks);
 }
+export async function createReadSasForBlobPath(blobPath) {
+    const { credential, account } = ensureStorageClients();
+    const [containerName, ...blobParts] = blobPath.split("/");
+    const blobName = blobParts.join("/");
+    if (!containerName || !blobName) {
+        throw new HttpError(400, "VALIDATION_ERROR", "Invalid blob path");
+    }
+    const startsOn = new Date(Date.now() - 5 * 60 * 1000);
+    const expiresOn = new Date(Date.now() + 10 * 60 * 1000);
+    const sas = generateBlobSASQueryParameters({
+        containerName,
+        blobName,
+        startsOn,
+        expiresOn,
+        permissions: BlobSASPermissions.parse("r")
+    }, credential).toString();
+    return `https://${account}.blob.core.windows.net/${containerName}/${blobName}?${sas}`;
+}
 //# sourceMappingURL=blob.js.map

@@ -85,9 +85,12 @@ export function Dashboard(): JSX.Element {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResult, setSearchResult] = useState<SearchResult | null>(null);
   const [selectedAsset, setSelectedAsset] = useState<Asset | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewAssetId, setPreviewAssetId] = useState<string | null>(null);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [newCategoryName, setNewCategoryName] = useState("");
-  const [renameInputs, setRenameInputs] = useState<Record<string, string>>({});
+  const [expandedCategoryIds, setExpandedCategoryIds] = useState<Record<string, boolean>>({});
+  const [categoryAssetSelections, setCategoryAssetSelections] = useState<Record<string, string>>({});
   const [settingsMode, setSettingsMode] = useState<"ai" | "ocr">("ocr");
   const [settingsProvider, setSettingsProvider] = useState<"openai" | "anthropic" | "google">("openai");
   const [settingsApiKey, setSettingsApiKey] = useState("");
@@ -99,6 +102,35 @@ export function Dashboard(): JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const client = useMemo(() => new WebApiClient(), []);
+  const categoryNameById = useMemo(
+    () =>
+      categories.reduce<Record<string, string>>((acc, category) => {
+        acc[category.id] = category.name;
+        return acc;
+      }, {}),
+    [categories]
+  );
+  const assetsByCategoryId = useMemo(
+    () =>
+      assets.reduce<Record<string, Asset[]>>((acc, asset) => {
+        if (!acc[asset.categoryId]) {
+          acc[asset.categoryId] = [];
+        }
+        acc[asset.categoryId].push(asset);
+        return acc;
+      }, {}),
+    [assets]
+  );
+
+  useEffect(() => {
+    setExpandedCategoryIds((previous) => {
+      const next: Record<string, boolean> = {};
+      for (const category of categories) {
+        next[category.id] = previous[category.id] ?? true;
+      }
+      return next;
+    });
+  }, [categories]);
 
   const refreshAssets = useCallback(async (): Promise<void> => {
     const result = await client.listAssets({ limit: 50 });
@@ -113,9 +145,6 @@ export function Dashboard(): JSX.Element {
     ]);
     setAssets(assetData.items);
     setCategories(categoryData);
-    setRenameInputs(
-      categoryData.reduce<Record<string, string>>((acc, c) => { acc[c.id] = c.name; return acc; }, {})
-    );
     setSettings(settingsData);
     setSettingsMode(settingsData.extractionMode);
     setSettingsProvider(settingsData.aiProvider ?? "openai");
@@ -169,33 +198,69 @@ export function Dashboard(): JSX.Element {
     finally { setIsBusy(false); }
   }, [client]);
 
+  const handleOpenPreview = useCallback(async (asset: Asset): Promise<void> => {
+    setErrorMessage(null);
+    setIsBusy(true);
+    try {
+      const url = await client.getAssetViewUrl(asset.id);
+      setPreviewAssetId(asset.id);
+      setPreviewUrl(url);
+    } catch (e) {
+      setErrorMessage(e instanceof Error ? e.message : "Failed to load preview");
+    } finally {
+      setIsBusy(false);
+    }
+  }, [client]);
+
+  const handleClosePreview = useCallback(() => {
+    setPreviewUrl(null);
+    setPreviewAssetId(null);
+  }, []);
+
   const handleCreateCategory = useCallback(async (): Promise<void> => {
     const name = newCategoryName.trim(); if (!name) return;
     setErrorMessage(null); setNotice(null); setIsBusy(true);
     try {
       await client.createCategory(name); setNewCategoryName("");
       const next = await client.listCategories(); setCategories(next);
-      setRenameInputs(next.reduce<Record<string, string>>((a, c) => { a[c.id] = c.name; return a; }, {}));
       setNotice("Category created");
     } catch (e) { setErrorMessage(e instanceof Error ? e.message : "Category create failed"); }
     finally { setIsBusy(false); }
   }, [client, newCategoryName]);
 
-  const handleRenameCategory = useCallback(async (cat: Category): Promise<void> => {
-    const name = (renameInputs[cat.id] ?? "").trim(); if (!name || name === cat.name) return;
+  const handleMoveAssetCategory = useCallback(async (assetId: string, categoryId: string, successMessage?: string): Promise<void> => {
     setErrorMessage(null); setNotice(null); setIsBusy(true);
-    try { await client.updateCategory(cat.id, { name }); setCategories(await client.listCategories()); setNotice("Category updated"); }
-    catch (e) { setErrorMessage(e instanceof Error ? e.message : "Category update failed"); }
-    finally { setIsBusy(false); }
-  }, [client, renameInputs]);
+    try {
+      const updated = await client.moveAssetToCategory(assetId, categoryId);
+      setAssets((previous) => previous.map((asset) => (asset.id === assetId ? updated : asset)));
+      setSelectedAsset((previous) => (previous?.id === assetId ? updated : previous));
+      setNotice(successMessage ?? "Asset moved");
+    } catch (e) {
+      setErrorMessage(e instanceof Error ? e.message : "Asset move failed");
+    } finally {
+      setIsBusy(false);
+    }
+  }, [client]);
 
-  const handleDeleteCategory = useCallback(async (cat: Category): Promise<void> => {
+  const handleAddAssetToCategory = useCallback(async (categoryId: string): Promise<void> => {
+    const selectedAssetId = categoryAssetSelections[categoryId];
+    if (!selectedAssetId) return;
+    await handleMoveAssetCategory(selectedAssetId, categoryId, "Asset added to category");
+    setCategoryAssetSelections((previous) => ({ ...previous, [categoryId]: "" }));
+  }, [categoryAssetSelections, handleMoveAssetCategory]);
+
+  const handleDeleteCategory = useCallback(async (cat: Category, categoryAssetCount: number): Promise<void> => {
     if (cat.slug === "general") return;
+    const confirmed = window.confirm(
+      `Delete category "${cat.name}" and permanently remove ${categoryAssetCount} asset(s) in it? This cannot be undone.`
+    );
+    if (!confirmed) return;
+
     setErrorMessage(null); setNotice(null); setIsBusy(true);
     try {
       await client.deleteCategory(cat.id);
       const [nc, na] = await Promise.all([client.listCategories(), client.listAssets({ limit: 50 })]);
-      setCategories(nc); setAssets(na.items); setNotice("Category deleted");
+      setCategories(nc); setAssets(na.items); setNotice(`Category deleted with ${categoryAssetCount} asset(s)`);
     } catch (e) { setErrorMessage(e instanceof Error ? e.message : "Category delete failed"); }
     finally { setIsBusy(false); }
   }, [client]);
@@ -220,6 +285,13 @@ export function Dashboard(): JSX.Element {
     } catch (e) { setErrorMessage(e instanceof Error ? e.message : "Settings update failed"); }
     finally { setIsBusy(false); }
   }, [client, settingsApiKey, settingsMode, settingsProvider]);
+
+  const toggleCategoryExpanded = useCallback((categoryId: string): void => {
+    setExpandedCategoryIds((previous) => ({
+      ...previous,
+      [categoryId]: !(previous[categoryId] ?? true)
+    }));
+  }, []);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault(); setDragOver(false);
@@ -423,6 +495,7 @@ export function Dashboard(): JSX.Element {
                 <div className="min-w-0 flex-1">
                   <p className="truncate font-body text-sm font-medium text-zinc-200">{asset.originalFileName}</p>
                   <p className="truncate font-body text-xs text-zinc-600">{asset.summary || "Processing..."}</p>
+                  <p className="truncate font-mono text-[10px] text-zinc-500 mt-0.5">{categoryNameById[asset.categoryId] ?? "Uncategorized"}</p>
                 </div>
                 <span className={statusBadge(asset.status)}>{asset.status}</span>
                 <button type="button" onClick={(e) => { e.stopPropagation(); void handleDeleteAsset(asset.id); }}
@@ -440,7 +513,18 @@ export function Dashboard(): JSX.Element {
                   <div>
                     <p className="font-body text-sm font-medium text-zinc-200">{selectedAsset.originalFileName}</p>
                     <p className="font-mono text-[10px] text-zinc-600 mt-0.5">{selectedAsset.id}</p>
+                    <p className="font-mono text-[10px] text-zinc-500 mt-1">{categoryNameById[selectedAsset.categoryId] ?? "Uncategorized"}</p>
                   </div>
+                  {(selectedAsset.mimeType.startsWith("image/") || selectedAsset.mimeType === "application/pdf") && (
+                    <button
+                      type="button"
+                      onClick={() => void handleOpenPreview(selectedAsset)}
+                      disabled={isBusy}
+                      className="btn-secondary text-xs"
+                    >
+                      Quick Preview
+                    </button>
+                  )}
                   <p className="font-body text-sm text-zinc-400 leading-relaxed">{selectedAsset.summary || "No summary yet"}</p>
                   {selectedAsset.fields.length > 0 && (
                     <div>
@@ -474,32 +558,181 @@ export function Dashboard(): JSX.Element {
         </div>
       )}
 
+      {previewUrl && previewAssetId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" onClick={handleClosePreview}>
+          <div className="relative w-full max-w-4xl rounded-lg border border-zinc-700 bg-surface p-3" onClick={(e) => e.stopPropagation()}>
+            <button type="button" onClick={handleClosePreview} className="absolute right-3 top-3 btn-danger text-xs px-2 py-1">
+              Close
+            </button>
+            {selectedAsset?.id === previewAssetId && selectedAsset.mimeType === "application/pdf" ? (
+              <iframe src={previewUrl} title="Asset preview" className="h-[75vh] w-full rounded border border-zinc-700 bg-black" />
+            ) : (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={previewUrl} alt="Asset preview" className="max-h-[75vh] w-full rounded object-contain" />
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Categories tab */}
       {activeTab === "categories" && (
-        <div className="card p-5 animate-fade-in">
-          <div className="mb-4 flex flex-wrap items-center gap-2">
-            <input value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void handleCreateCategory()}
-              placeholder="New category name" className="input-field max-w-xs" />
-            <button type="button" onClick={() => void handleCreateCategory()} disabled={isBusy || !newCategoryName.trim()} className="btn-primary text-xs">
-              <IconPlus /> Create
-            </button>
+        <div className="space-y-4 animate-fade-in">
+          <div className="card p-5">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <input value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && void handleCreateCategory()}
+                placeholder="New category name" className="input-field max-w-xs" />
+              <button type="button" onClick={() => void handleCreateCategory()} disabled={isBusy || !newCategoryName.trim()} className="btn-primary text-xs">
+                <IconPlus /> Add Category
+              </button>
+            </div>
+            <p className="font-body text-xs text-amber-300/80">Deleting a category permanently deletes all assets inside it.</p>
           </div>
-          <div className="space-y-2">
-            {categories.map((cat) => (
-              <div key={cat.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-zinc-800/60 bg-surface-2 px-4 py-3">
-                <input value={renameInputs[cat.id] ?? cat.name}
-                  onChange={(e) => setRenameInputs((p) => ({ ...p, [cat.id]: e.target.value }))}
-                  className="input-field min-w-[200px] flex-1 max-w-sm" />
-                <span className="font-mono text-[10px] text-zinc-600">{cat.slug}</span>
-                <span className="font-mono text-[10px] text-zinc-600">{cat.assetCount} assets</span>
-                <div className="flex gap-2 ml-auto">
-                  <button type="button" onClick={() => void handleRenameCategory(cat)} disabled={isBusy} className="btn-secondary text-xs">Save</button>
-                  <button type="button" onClick={() => void handleDeleteCategory(cat)} disabled={isBusy || cat.slug === "general"} className="btn-danger text-xs">Delete</button>
+
+          {categories.map((category) => {
+            const categoryAssets = assetsByCategoryId[category.id] ?? [];
+            const isExpanded = expandedCategoryIds[category.id] ?? true;
+            const movableAssets = assets.filter((asset) => asset.categoryId !== category.id);
+            const selectedAssetId = categoryAssetSelections[category.id] ?? "";
+
+            return (
+              <section key={category.id} className="card overflow-hidden">
+                <div className="flex flex-wrap items-center gap-3 border-b border-zinc-800/60 bg-surface-2 px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() => toggleCategoryExpanded(category.id)}
+                    className="flex items-center gap-2 text-left"
+                  >
+                    <svg
+                      width="12"
+                      height="12"
+                      viewBox="0 0 12 12"
+                      fill="none"
+                      className={`transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                    >
+                      <path d="M3 2l5 4-5 4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                    <span className="font-display text-sm font-semibold text-zinc-100">{category.name}</span>
+                  </button>
+                  <span className="font-mono text-[10px] text-zinc-500">{category.slug}</span>
+                  <span className="font-mono text-[10px] text-zinc-500">{categoryAssets.length} assets</span>
+                  <button
+                    type="button"
+                    onClick={() => void handleDeleteCategory(category, categoryAssets.length)}
+                    disabled={isBusy || category.slug === "general"}
+                    className="btn-danger ml-auto text-xs"
+                  >
+                    Remove Category
+                  </button>
                 </div>
-              </div>
-            ))}
-          </div>
+
+                {isExpanded && (
+                  <div className="space-y-3 p-4">
+                    <div className="rounded-lg border border-zinc-800/60 bg-surface-2 p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <select
+                          value={selectedAssetId}
+                          onChange={(event) =>
+                            setCategoryAssetSelections((previous) => ({
+                              ...previous,
+                              [category.id]: event.target.value
+                            }))
+                          }
+                          className="select-field min-w-[220px]"
+                        >
+                          <option value="">Select asset to add</option>
+                          {movableAssets.map((asset) => (
+                            <option key={asset.id} value={asset.id}>
+                              {asset.originalFileName}
+                            </option>
+                          ))}
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => void handleAddAssetToCategory(category.id)}
+                          disabled={isBusy || !selectedAssetId}
+                          className="btn-secondary text-xs"
+                        >
+                          Add Asset
+                        </button>
+                      </div>
+                    </div>
+
+                    {categoryAssets.length === 0 && (
+                      <p className="rounded-lg border border-zinc-800/60 bg-surface-2 px-4 py-3 font-body text-sm text-zinc-500">
+                        No assets in this category.
+                      </p>
+                    )}
+
+                    {categoryAssets.map((asset) => (
+                      <div key={asset.id} className="rounded-lg border border-zinc-800/60 bg-surface-2 p-4">
+                        <div className="flex flex-wrap items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <p className="truncate font-body text-sm font-medium text-zinc-200">{asset.originalFileName}</p>
+                            <p className="font-body text-xs text-zinc-500">{asset.summary || "No preview available yet"}</p>
+                          </div>
+                          <span className={statusBadge(asset.status)}>{asset.status}</span>
+                        </div>
+
+                        <p className="mt-2 font-mono text-[10px] text-zinc-500">
+                          Type: {asset.mimeType} · Fields: {asset.fields.length} · Entities: {asset.entities.length} · Added: {new Date(asset.createdAt).toLocaleString()}
+                        </p>
+
+                        {asset.fields.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {asset.fields.slice(0, 4).map((field) => (
+                              <span key={`${asset.id}-${field.key}-${String(field.value)}`} className="rounded-full bg-surface-3 px-2 py-1 font-mono text-[10px] text-zinc-400">
+                                {field.key}: {String(field.value)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <select
+                            value={asset.categoryId}
+                            onChange={(event) => void handleMoveAssetCategory(asset.id, event.target.value)}
+                            disabled={isBusy}
+                            className="select-field min-w-[200px]"
+                          >
+                            {categories.map((optionCategory) => (
+                              <option key={optionCategory.id} value={optionCategory.id}>
+                                Move to: {optionCategory.name}
+                              </option>
+                            ))}
+                          </select>
+                          {(asset.mimeType.startsWith("image/") || asset.mimeType === "application/pdf") && (
+                            <button
+                              type="button"
+                              onClick={() => void handleOpenPreview(asset)}
+                              disabled={isBusy}
+                              className="btn-secondary text-xs"
+                            >
+                              Preview
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => void handleDeleteAsset(asset.id)}
+                            disabled={isBusy}
+                            className="btn-danger text-xs"
+                          >
+                            Remove Asset
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            );
+          })}
+
+          {categories.length === 0 && (
+            <div className="card px-4 py-6">
+              <p className="font-body text-sm text-zinc-500">No categories available.</p>
+            </div>
+          )}
         </div>
       )}
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { errorResponse, success } from "../../http/response.js";
-import { exchangeAuthorizationCode } from "../../services/b2c.js";
+import { exchangeAuthorizationCode, mintApiTokenFromOAuthToken } from "../../services/b2c.js";
 const callbackSchema = z
     .object({
     code: z.string().min(1).optional(),
@@ -24,8 +24,9 @@ export async function authCallbackHandler(request, context) {
             });
         }
         const token = await exchangeAuthorizationCode(body.code, body.redirectUri, body.codeVerifier);
+        const apiToken = mintApiTokenFromOAuthToken(token.access_token);
         return success({
-            accessToken: token.access_token,
+            accessToken: apiToken,
             refreshToken: token.refresh_token,
             expiresIn: token.expires_in
         });
